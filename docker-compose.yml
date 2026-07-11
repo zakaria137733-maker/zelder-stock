@@ -1,0 +1,107 @@
+version: "3.9"
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: siq_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: sentimentiq
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: siq_influx
+    ports:
+      - "8086:8086"
+    volumes:
+      - influx_data:/var/lib/influxdb2
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      DOCKER_INFLUXDB_INIT_PASSWORD: password123
+      DOCKER_INFLUXDB_INIT_ORG: sentimentiq
+      DOCKER_INFLUXDB_INIT_BUCKET: stock_trades
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: sentimentiq-super-secret-token
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: siq_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: siq_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/sentimentiq
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: sentimentiq-super-secret-token
+      INFLUX_ORG: sentimentiq
+      INFLUX_BUCKET: sentiment_scores
+      REDIS_URL: redis://redis:6379
+      NEWS_API_KEY: ${NEWS_API_KEY}
+      USE_FINBERT: "true"
+      PYTHONUNBUFFERED: "1"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: siq_worker
+    volumes:
+      - ./backend:/app
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/sentimentiq
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_TOKEN: sentimentiq-super-secret-token
+      INFLUX_ORG: sentimentiq
+      INFLUX_BUCKET: sentiment_scores
+      REDIS_URL: redis://redis:6379
+      NEWS_API_KEY: ${NEWS_API_KEY}
+      USE_FINBERT: "true"
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app
+    command: celery -A workers.celery_app worker --beat --loglevel=info --concurrency=2
+
+volumes:
+  mongo_data:
+  influx_data:
