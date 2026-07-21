@@ -1,5 +1,6 @@
 "use client";
 import { LayoutDashboard, TrendingUp, Users, ArrowLeftRight, Rss, Settings, Zap } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 const nav = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -11,6 +12,20 @@ const nav = [
 ];
 
 export default function Sidebar({ active, onNav }: { active: string; onNav: (v: string) => void }) {
+  const router = useRouter();
+
+  const logout = () => {
+    localStorage.removeItem("zs_token");
+    localStorage.removeItem("zs_user");
+    router.push("/login");
+  };
+
+  const getUser = () => {
+    try {
+      return JSON.parse(localStorage.getItem("zs_user") || "{}");
+    } catch { return {}; }
+  };
+
   return (
     <aside style={{ width: 220, flexShrink: 0, background: "var(--surface)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", height: "100vh", position: "sticky", top: 0 }}>
       <div style={{ padding: "18px 16px 14px", borderBottom: "1px solid var(--border)" }}>
@@ -76,10 +91,26 @@ export default function Sidebar({ active, onNav }: { active: string; onNav: (v: 
 
       <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
         <div style={{ fontSize: 10, color: "var(--muted)" }}>v1.0.0 · All systems operational</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 4, marginBottom: 8 }}>
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981", display: "inline-block" }} />
           <span style={{ fontSize: 10, color: "#10b981" }}>Live data active</span>
         </div>
+        {getUser().name && (
+          <div style={{ fontSize: 11, color: "var(--text)", fontWeight: 500, marginBottom: 8 }}>
+            {getUser().name}
+          </div>
+        )}
+        <button onClick={logout} style={{
+          width: "100%", padding: "7px", borderRadius: 7,
+          border: "1px solid var(--border-strong)",
+          background: "transparent", color: "var(--muted)",
+          fontSize: 11, cursor: "pointer"
+        }}
+          onMouseEnter={e => { e.currentTarget.style.background = "var(--red-dim)"; e.currentTarget.style.color = "var(--red)"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--muted)"; }}
+        >
+          Sign Out
+        </button>
       </div>
     </aside>
   );

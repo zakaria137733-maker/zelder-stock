@@ -5,6 +5,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from config import settings
 
 TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
+MARKET_TICKERS = ["SPY", "QQQ", "^VIX"]
 
 def fetch_and_store():
     client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
@@ -14,12 +15,11 @@ def fetch_and_store():
     for ticker in TICKERS:
         print(f"Fetching {ticker}...")
         t = yf.Ticker(ticker)
-        # Max period for hourly data is 730 days but free tier gives 60 days
-        hist = t.history(period="60d", interval="1h")
+        hist = t.history(period="2y", interval="1d")
         points = []
         for ts, row in hist.iterrows():
             p = (
-                Point("prices")
+                Point("prices_daily")
                 .tag("ticker", ticker)
                 .field("close", float(row["Close"]))
                 .field("volume", float(row["Volume"]))
@@ -32,6 +32,27 @@ def fetch_and_store():
             write_api.write(bucket="sentiment_scores", record=points)
             print(f"  {ticker}: {len(points)} hourly price points written")
             total += len(points)
+    
+    print("\nFetching market indices...")
+    for ticker in MARKET_TICKERS:
+        safe_name = ticker.replace("^", "")
+        print(f"Fetching {ticker}...")
+        t = yf.Ticker(ticker)
+        hist = t.history(period="2y", interval="1d")
+        points = []
+        for ts, row in hist.iterrows():
+            p = (
+                Point("market_index")
+                .tag("ticker", safe_name)
+                .field("close", float(row["Close"]))
+                .field("volume", float(row.get("Volume", 0)))
+                .time(ts.to_pydatetime())
+            )
+            points.append(p)
+        if points:
+            write_api.write(bucket="sentiment_scores", record=points)
+            print(f"  {safe_name}: {len(points)} points written")
+            total += len(points)        
 
     client.close()
     print(f"\nTotal: {total} points written to InfluxDB")
