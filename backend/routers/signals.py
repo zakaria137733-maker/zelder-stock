@@ -1,6 +1,6 @@
 import asyncio
 import json
-import httpx
+import feedparser
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from config import settings
 from services.sentiment import classify_sentiment
@@ -16,44 +16,61 @@ TICKER_QUERIES = {
     "AMZN":"Amazon stock","META":"Meta Facebook stock",
 }
 
-async def fetch_signals_for_ticker(ticker:str)->list[dict]:
-    cached=cache_get(f"signals:{ticker}")
-    if cached:
-        return cached
-    if not settings.news_api_key:
-        return []
-    params = {"q": TICKER_QUERIES.get(ticker,ticker),"pageSize":10,"language":"en","apiKey":settings.news_api_key}
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp=await client.get("https://newsapi.org/v2/everything", params=params)
-            articles=resp.json().get("articles",[])
-    except Exception as e:
-        print(f"NewsAPI error:{e}")
-        return []
+
+def _fetch_google_news(ticker: str) -> list[dict]:
+    url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
+    feed = feedparser.parse(url)
     signals = []
-    for a in articles:
-        text = f"{a.get('title','')}.{a.get('description','')}".strip()
-        if not text or text==".":
+    for entry in feed.entries[:12]:
+        text = entry.get("title", "") + ". " + entry.get("summary", "")
+        text = text[:500]
+        if not text.strip():
             continue
         s = classify_sentiment(text)
+        source_name = "Google News"
+        try:
+            if hasattr(entry.get("source", {}), "get"):
+                source_name = entry["source"].get("title", "Google News")
+        except Exception:
+            pass
         signals.append({
-            "ticker": ticker,"source":"newsapi",
-            "source_name":a.get("source",{}).get("name","NewsAPI"),
-            "title":a.get("title",""),"url":a.get("url",""),
-            "published_at":a.get("publishedAt",""),"age_hours":1.0,
-            "score":s["score"],"label":s["label"],"confidence":s["confidence"],
+            "ticker": ticker,
+            "source": "google_news",
+            "source_name": source_name,
+            "title": entry.get("title", ""),
+            "url": entry.get("link", ""),
+            "published_at": entry.get("published", ""),
+            "age_hours": 1.0,
+            "score": s["score"],
+            "label": s["label"],
+            "confidence": s["confidence"],
         })
-    if signals:
-        cache_set(f"signals:{ticker}",signals,ttl=1800)
     return signals
 
+
+async def fetch_signals_for_ticker(ticker: str) -> list[dict]:
+    cached = cache_get(f"signals:{ticker}")
+    if cached:
+        return cached
+
+    try:
+        signals = await asyncio.get_event_loop().run_in_executor(None, _fetch_google_news, ticker)
+        if signals:
+            cache_set(f"signals:{ticker}", signals, ttl=3600)
+        return signals
+    except Exception as e:
+        print(f"Google News error for {ticker}: {e}")
+        return []
+
+
 @router.get("/api/signals")
-async def get_signals(ticker: str | None=None, limit: int=30):
+async def get_signals(ticker: str | None = None, limit: int = 30):
     tickers = [ticker.upper()] if ticker else TICKERS[:4]
-    all_signals=[]
+    all_signals = []
     for t in tickers:
         all_signals.extend(await fetch_signals_for_ticker(t))
-    return sorted(all_signals,key=lambda s:s.get("age_hours",99))[:limit]
+    return sorted(all_signals, key=lambda s: s.get("age_hours", 99))[:limit]
+
 
 @router.websocket("/ws/signals")
 async def signals_websocket(ws: WebSocket):
@@ -64,7 +81,7 @@ async def signals_websocket(ws: WebSocket):
     try:
         while True:
             message = await asyncio.wait_for(pubsub.get_message(ignore_subscribe_messages=True), timeout=30)
-            if message and message["type"]=="message":
+            if message and message["type"] == "message":
                 await ws.send_text(message["data"])
             else:
                 await ws.send_text(json.dumps({"type": "heartbeat"}))

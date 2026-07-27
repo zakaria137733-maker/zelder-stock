@@ -15,14 +15,31 @@ from services.auth import hash_password
 _last_collect = {"time": None, "status": "idle"}
 
 
-def _run_collection():
+def _run_lightweight_collect():
     try:
         _last_collect["status"] = "running"
-        from free_collect import collect_all
-        collect_all()
+        from routers.signals import _fetch_google_news, cache_set
+        from services.sentiment import compute_composite
+        from services import influx as influx_svc
+
+        TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
+
+        for ticker in TICKERS:
+            try:
+                signals = _fetch_google_news(ticker)
+                if signals:
+                    cache_set(f"signals:{ticker}", signals, ttl=3600)
+                    composite = compute_composite(signals)
+                    avg_score = sum(s["score"] for s in signals) / len(signals)
+                    influx_svc.write_sentiment(ticker, avg_score, composite, "google_news", len(signals))
+                    cache_set(f"composite:{ticker}", {"score": composite, "signal_count": len(signals)}, ttl=3600)
+                    print(f"  {ticker}: {composite:.1f} ({len(signals)} signals)")
+            except Exception as e:
+                print(f"  {ticker} error: {e}")
+
         _last_collect["time"] = datetime.now(timezone.utc).isoformat()
         _last_collect["status"] = "idle"
-        print("Collection completed successfully")
+        print("Collection completed")
     except Exception as e:
         _last_collect["status"] = f"error: {e}"
         print(f"Collection error: {e}")
@@ -83,7 +100,7 @@ async def list_tickers():
 
 @app.post("/api/admin/collect")
 async def trigger_collect():
-    asyncio.get_event_loop().run_in_executor(None, _run_collection)
+    asyncio.get_event_loop().run_in_executor(None, _run_lightweight_collect)
     return {"ok": True, "message": "Collection started"}
 
 
