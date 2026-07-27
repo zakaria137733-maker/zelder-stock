@@ -104,6 +104,11 @@ async def seed_all():
         PRICES = {"AAPL": 189.42, "TSLA": 248.17, "NVDA": 876.54, "MSFT": 415.22, "GOOGL": 175.83, "AMZN": 185.60, "META": 490.32}
 
         influx_client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+        buckets_api = influx_client.buckets_api()
+        existing = [b.name for b in buckets_api.find_buckets().buckets]
+        for bucket_name in ["sentiment_scores", "stock_trades"]:
+            if bucket_name not in existing:
+                buckets_api.create_bucket(bucket_name=bucket_name, org=settings.influx_org)
         write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 
         points = []
