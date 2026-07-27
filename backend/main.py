@@ -31,13 +31,10 @@ def _run_collection():
 
 async def _periodic_collection():
     await asyncio.sleep(10)
-    await asyncio.get_event_loop().run_in_executor(None, _run_collection)
+    asyncio.get_event_loop().run_in_executor(None, _run_collection)
     while True:
         await asyncio.sleep(300)
-        try:
-            await asyncio.get_event_loop().run_in_executor(None, _run_collection)
-        except Exception as e:
-            print(f"Periodic collection error: {e}")
+        asyncio.get_event_loop().run_in_executor(None, _run_collection)
 
 
 @asynccontextmanager
@@ -96,8 +93,8 @@ async def list_tickers():
 
 @app.post("/api/admin/collect")
 async def trigger_collect():
-    await asyncio.get_event_loop().run_in_executor(None, _run_collection)
-    return {"ok": True, "last_collect": _last_collect["time"]}
+    asyncio.get_event_loop().run_in_executor(None, _run_collection)
+    return {"ok": True, "message": "Collection started in background"}
 
 
 @app.get("/api/admin/collect/status")
