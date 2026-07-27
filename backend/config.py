@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     mongo_uri: str = "mongodb://localhost:27017/sentimentiq"
@@ -10,8 +11,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     news_api_key: str = ""
 
-    class Config:
-        env_file = ".env"
-
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",
+    )
 
 settings = Settings()
