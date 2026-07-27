@@ -1,4 +1,4 @@
-fastapi==0.110.3
+fasfastapi==0.110.3
 uvicorn[standard]==0.29.0
 motor==3.4.0
 pymongo==4.7.2
@@ -12,8 +12,8 @@ python-dotenv==1.0.1
 spacy==3.7.4
 transformers==4.41.0
 torch==2.3.0
+scikit-learn==1.5.1
 vaderSentiment==3.3.2
-websockets==15.0.1
 python-multipart==0.0.9
 yfinance==1.4.1
 feedparser==6.0.12
