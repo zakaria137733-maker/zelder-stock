@@ -12,29 +12,22 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from config import settings
 from services.auth import hash_password
 
-_collect_task = None
-_last_collect = {"time": None, "results": []}
+_last_collect = {"time": None, "status": "idle"}
 
 
 def _run_collection():
     try:
+        _last_collect["status"] = "running"
         from free_collect import collect_all
         collect_all()
         _last_collect["time"] = datetime.now(timezone.utc).isoformat()
-        _last_collect["results"] = ["done"]
+        _last_collect["status"] = "idle"
         print("Collection completed successfully")
     except Exception as e:
+        _last_collect["status"] = f"error: {e}"
         print(f"Collection error: {e}")
         import traceback
         traceback.print_exc()
-
-
-async def _periodic_collection():
-    await asyncio.sleep(10)
-    asyncio.get_event_loop().run_in_executor(None, _run_collection)
-    while True:
-        await asyncio.sleep(300)
-        asyncio.get_event_loop().run_in_executor(None, _run_collection)
 
 
 @asynccontextmanager
@@ -44,10 +37,7 @@ async def lifespan(app: FastAPI):
     await db.customers.create_index("watchlist")
     await db.customers.create_index([("sentiment_score", -1)])
     print("ZelderStock API ready")
-
-    task = asyncio.create_task(_periodic_collection())
     yield
-    task.cancel()
     await mongo.close()
 
 
@@ -83,7 +73,7 @@ app.include_router(auth.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "ZelderStock", "last_collect": _last_collect["time"]}
+    return {"status": "ok", "service": "ZelderStock", "last_collect": _last_collect}
 
 
 @app.get("/api/tickers")
@@ -94,12 +84,12 @@ async def list_tickers():
 @app.post("/api/admin/collect")
 async def trigger_collect():
     asyncio.get_event_loop().run_in_executor(None, _run_collection)
-    return {"ok": True, "message": "Collection started in background"}
+    return {"ok": True, "message": "Collection started"}
 
 
 @app.get("/api/admin/collect/status")
 async def collect_status():
-    return {"last_collect": _last_collect["time"], "results": _last_collect["results"]}
+    return _last_collect
 
 
 @app.post("/api/admin/seed")
