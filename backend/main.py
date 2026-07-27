@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import sentiment, customers, transactions, signals, prices, alerts, predictions
 from services import mongo
 from routers import auth
-import os
+import os, asyncio
 from datetime import datetime, timezone, timedelta
 import random
 from influxdb_client import InfluxDBClient, Point
@@ -12,6 +12,26 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from config import settings
 from services.auth import hash_password
 
+_collect_task = None
+_last_collect = {"time": None, "results": []}
+
+
+def _run_collection():
+    from free_collect import collect_all
+    try:
+        results = collect_all()
+        _last_collect["time"] = datetime.now(timezone.utc).isoformat()
+        _last_collect["results"] = results
+        return results
+    except Exception as e:
+        print(f"Background collection error: {e}")
+        return []
+
+
+async def _periodic_collection():
+    while True:
+        await asyncio.sleep(300)
+        await asyncio.get_event_loop().run_in_executor(None, _run_collection)
 
 
 @asynccontextmanager
@@ -21,7 +41,11 @@ async def lifespan(app: FastAPI):
     await db.customers.create_index("watchlist")
     await db.customers.create_index([("sentiment_score", -1)])
     print("ZelderStock API ready")
+
+    asyncio.get_event_loop().run_in_executor(None, _run_collection)
+    task = asyncio.create_task(_periodic_collection())
     yield
+    task.cancel()
     await mongo.close()
 
 
@@ -57,12 +81,23 @@ app.include_router(auth.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "ZelderStock"}
+    return {"status": "ok", "service": "ZelderStock", "last_collect": _last_collect["time"]}
 
 
 @app.get("/api/tickers")
 async def list_tickers():
     return ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
+
+
+@app.post("/api/admin/collect")
+async def trigger_collect():
+    results = await asyncio.get_event_loop().run_in_executor(None, _run_collection)
+    return {"ok": True, "last_collect": _last_collect["time"], "tickers": len(results)}
+
+
+@app.get("/api/admin/collect/status")
+async def collect_status():
+    return {"last_collect": _last_collect["time"], "results": _last_collect["results"]}
 
 
 @app.post("/api/admin/seed")
