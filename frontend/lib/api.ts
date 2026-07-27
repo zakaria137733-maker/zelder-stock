@@ -1,6 +1,8 @@
 import axios from "axios";
 
-const api = axios.create({ baseURL: "http://localhost:8000" });
+const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+});
 
 export const getSentiment = (ticker: string) =>
   api.get(`/api/sentiment/${ticker}`).then((r) => r.data);

@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from routers import sentiment, customers, transactions, signals, prices, alerts, predictions
 from services import mongo
 from routers import auth
+import os
 
 
 
@@ -27,7 +28,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "https://zelder-stock-f.onrender.com",
+        os.getenv("FRONTEND_URL", ""),
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
