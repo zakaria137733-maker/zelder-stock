@@ -17,21 +17,27 @@ _last_collect = {"time": None, "results": []}
 
 
 def _run_collection():
-    from free_collect import collect_all
     try:
-        results = collect_all()
+        from free_collect import collect_all
+        collect_all()
         _last_collect["time"] = datetime.now(timezone.utc).isoformat()
-        _last_collect["results"] = results
-        return results
+        _last_collect["results"] = ["done"]
+        print("Collection completed successfully")
     except Exception as e:
-        print(f"Background collection error: {e}")
-        return []
+        print(f"Collection error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 async def _periodic_collection():
+    await asyncio.sleep(10)
+    await asyncio.get_event_loop().run_in_executor(None, _run_collection)
     while True:
         await asyncio.sleep(300)
-        await asyncio.get_event_loop().run_in_executor(None, _run_collection)
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, _run_collection)
+        except Exception as e:
+            print(f"Periodic collection error: {e}")
 
 
 @asynccontextmanager
@@ -42,7 +48,6 @@ async def lifespan(app: FastAPI):
     await db.customers.create_index([("sentiment_score", -1)])
     print("ZelderStock API ready")
 
-    asyncio.get_event_loop().run_in_executor(None, _run_collection)
     task = asyncio.create_task(_periodic_collection())
     yield
     task.cancel()
@@ -91,8 +96,8 @@ async def list_tickers():
 
 @app.post("/api/admin/collect")
 async def trigger_collect():
-    results = await asyncio.get_event_loop().run_in_executor(None, _run_collection)
-    return {"ok": True, "last_collect": _last_collect["time"], "tickers": len(results)}
+    await asyncio.get_event_loop().run_in_executor(None, _run_collection)
+    return {"ok": True, "last_collect": _last_collect["time"]}
 
 
 @app.get("/api/admin/collect/status")
