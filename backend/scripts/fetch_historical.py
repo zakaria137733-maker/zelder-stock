@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 
@@ -20,15 +21,16 @@ TICKERS = [
 ]
 MARKET_TICKERS = ["^VIX"]
 
-def fetch_and_store():
+def fetch_and_store(period="5y", tickers=None):
+    tickers = tickers or TICKERS
     client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
     total = 0
-    for ticker in TICKERS:
+    for ticker in tickers:
         print(f"Fetching {ticker}...")
         t = yf.Ticker(ticker)
-        hist = t.history(period="2y", interval="1d")
+        hist = t.history(period=period, interval="1d")
         points = []
         for ts, row in hist.iterrows():
             p = (
@@ -43,15 +45,17 @@ def fetch_and_store():
             points.append(p)
         if points:
             write_api.write(bucket="sentiment_scores", record=points)
-            print(f"  {ticker}: {len(points)} hourly price points written")
+            print(f"  {ticker}: {len(points)} daily price points written")
             total += len(points)
+        else:
+            print(f"  {ticker}: no data (skipped)")
     
     print("\nFetching market indices...")
     for ticker in MARKET_TICKERS:
         safe_name = ticker.replace("^", "")
         print(f"Fetching {ticker}...")
         t = yf.Ticker(ticker)
-        hist = t.history(period="2y", interval="1d")
+        hist = t.history(period=period, interval="1d")
         points = []
         for ts, row in hist.iterrows():
             p = (
@@ -71,4 +75,8 @@ def fetch_and_store():
     print(f"\nTotal: {total} points written to InfluxDB")
 
 if __name__ == "__main__":
-    fetch_and_store()
+    parser = argparse.ArgumentParser(description="Backfill daily OHLCV bars from Yahoo Finance into InfluxDB")
+    parser.add_argument("--period", default="5y", help="yfinance history period (default 5y)")
+    parser.add_argument("--tickers", default="", help="comma-separated override of the default ticker list")
+    args = parser.parse_args()
+    fetch_and_store(period=args.period, tickers=[t.strip() for t in args.tickers.split(",") if t.strip()] or None)
