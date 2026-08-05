@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   mongodb:
     image: mongo:7
@@ -82,6 +80,10 @@ services:
       INFLUX_BUCKET: sentiment_scores
       REDIS_URL: redis://redis:6379
       NEWS_API_KEY: ${NEWS_API_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_SECRET: ${ADMIN_SECRET}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       USE_FINBERT: "true"
       PYTHONUNBUFFERED: "1"
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload

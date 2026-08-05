@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getSignals } from "@/lib/api";
 import { useState } from "react";
 import { ExternalLink } from "lucide-react";
+import type { Signal } from "@/lib/types";
 
 type Filter = "all" | "positive" | "negative" | "neutral";
 const card = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 20 };
@@ -10,7 +11,7 @@ const card = { background: "var(--surface)", border: "1px solid var(--border)", 
 export default function SentimentFeed({ ticker }: { ticker: string }) {
   const [filter, setFilter] = useState<Filter>("all");
   const { data: signals, isLoading } = useQuery({ queryKey: ["signals", ticker], queryFn: () => getSignals(ticker), refetchInterval: 30000 });
-  const filtered = (signals ?? []).filter((s: any) => filter === "all" || s.label === filter);
+  const filtered = (signals ?? []).filter((s: Signal) => filter === "all" || s.label === filter);
 
   return (
     <div style={{ padding: 20 }}>
@@ -36,7 +37,7 @@ export default function SentimentFeed({ ticker }: { ticker: string }) {
           <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: 40 }}>No {filter === "all" ? "" : filter} signals found.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {filtered.map((s: any, i: number) => (
+            {filtered.map((s: Signal, i: number) => (
               <div key={i} style={{ padding: "12px 14px", borderRadius: 10, background: "var(--surface-2)", border: "1px solid var(--border)", display: "flex", gap: 12, alignItems: "flex-start" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>

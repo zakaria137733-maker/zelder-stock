@@ -1,3 +1,7 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """
 Walk-forward validation — tests if accuracy is consistent
 across different time periods, not just one lucky split.

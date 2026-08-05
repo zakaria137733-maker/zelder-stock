@@ -1,6 +1,7 @@
 "use client";
 import { useQuery } from "@tanstack/react-query";
 import api from "@/lib/api";
+import type { Prediction } from "@/lib/types";
 
 const getPredictions = () => api.get("/api/predictions/").then(r => r.data);
 
@@ -24,19 +25,19 @@ export default function Predictions() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 500 }}>LSTM Price Predictions</div>
         <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4, fontWeight: 600, background: "var(--accent-dim)", color: "#60a5fa" }}>
-          Ensemble 5-Model · 65.1% acc · 50 tickers
+          LSTM Ensemble · 7 tickers
         </span>
       </div>
 
       <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 12, padding: "6px 10px", background: "var(--surface-2)", borderRadius: 6 }}>
-        Predicts next-hour price direction from 6h sentiment + price window
+        Predicts next-day price direction from a 10-day sentiment + price window
       </div>
 
       {isLoading ? (
         <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: 20 }}>Loading predictions...</div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 8 }}>
-          {list.map((p: any) => (
+          {list.map((p: Prediction) => (
             <div key={p.ticker} style={{ padding: "10px 8px", borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border)", textAlign: "center" }}>
               <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>{p.ticker}</div>
               <div style={{

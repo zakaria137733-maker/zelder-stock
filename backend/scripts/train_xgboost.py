@@ -1,3 +1,9 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import os
+import pickle
 import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score
@@ -104,8 +110,8 @@ if __name__ == "__main__":
     importances = sorted(zip(feature_names, model.feature_importances_), key=lambda x: -x[1])
     for name, imp in importances:
         print(f"  {name}: {imp:.3f}")
-        import pickle
-        os.makedirs("/app/models", exist_ok=True)
-        with open("/app/models/xgboost_model.pkl", "wb") as f:
-            pickle.dump(model, f)
-        print("XGBoost model saved → /app/models/xgboost_model.pkl")
+
+    os.makedirs("/app/models", exist_ok=True)
+    with open("/app/models/xgboost_model.pkl", "wb") as f:
+        pickle.dump(model, f)
+    print("XGBoost model saved → /app/models/xgboost_model.pkl")

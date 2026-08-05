@@ -1,10 +1,35 @@
-from fastapi import APIRouter, HTTPException
+import secrets
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from services.auth import hash_password, verify_password, create_token
+
+from config import settings
+from services.auth import create_token, get_current_user, hash_password, verify_password
 from services.mongo import get_db
-from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+class AdminLoginBody(BaseModel):
+    username: str
+    password: str
+
+
+admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+@admin_router.post("/login")
+async def admin_login(body: AdminLoginBody):
+    if not settings.admin_username or not settings.admin_password:
+        raise HTTPException(503, "ADMIN_USERNAME / ADMIN_PASSWORD are not configured")
+    if not secrets.compare_digest(body.username, settings.admin_username):
+        raise HTTPException(401, "Invalid username or password")
+    if not secrets.compare_digest(body.password, settings.admin_password):
+        raise HTTPException(401, "Invalid username or password")
+
+    token = create_token({"sub": "admin", "name": settings.admin_username, "role": "admin"})
+    return {"token": token, "username": settings.admin_username, "role": "admin"}
 
 
 class RegisterBody(BaseModel):
@@ -36,9 +61,9 @@ async def register(body: RegisterBody):
         "risk_profile": body.risk_profile,
         "watchlist": [t.upper() for t in body.watchlist],
         "sentiment_score": 50.0,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(UTC),
     }
-    result = await db.customers.insert_one(doc)
+    await db.customers.insert_one(doc)
     token = create_token({"sub": body.email, "name": body.name})
     return {"token": token, "name": body.name, "email": body.email}
 
@@ -65,7 +90,5 @@ async def login(body: LoginBody):
 
 
 @router.get("/me")
-async def me(token: str):
-    from services.auth import decode_token
-    payload = decode_token(token)
-    return {"email": payload.get("sub"), "name": payload.get("name")}
+async def me(user=Depends(get_current_user)):
+    return user

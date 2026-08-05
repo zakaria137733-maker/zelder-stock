@@ -26,7 +26,7 @@ export default function Home() {
   useEffect(() => {
     const token = localStorage.getItem("zs_token");
     if (!token) router.push("/login");
-  }, []);
+  }, [router]);
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>

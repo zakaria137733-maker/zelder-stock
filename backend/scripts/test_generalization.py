@@ -1,3 +1,7 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """
 Cross-sector generalization test.
 Train on tech + financials, test on healthcare + energy + consumer.

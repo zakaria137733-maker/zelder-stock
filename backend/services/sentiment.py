@@ -7,6 +7,7 @@ it will lazy-load the model on first use (~3GB RAM, 30s startup).
 """
 import os
 import re
+
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 _vader = SentimentIntensityAnalyzer()

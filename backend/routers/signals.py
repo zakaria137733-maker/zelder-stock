@@ -1,15 +1,17 @@
 import asyncio
 import json
+
 import feedparser
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from config import settings
-from services.sentiment import classify_sentiment
-from services.redis_client import cache_set, cache_get
 import redis.asyncio as aioredis
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from config import settings
+from services.redis_client import cache_get, cache_set
+from services.sentiment import classify_sentiment
+from tickers import TICKERS, validate_ticker
 
 router = APIRouter(tags=["signals"])
 
-TICKERS = ["AAPL","TSLA","NVDA","MSFT","GOOGL","AMZN","META"]
 TICKER_QUERIES = {
     "AAPL":"Apple stock","TSLA":"Tesla stock","NVDA":"Nvidia stock",
     "MSFT":"Microsoft stock","GOOGL":"Google Alphabet stock",
@@ -65,7 +67,7 @@ async def fetch_signals_for_ticker(ticker: str) -> list[dict]:
 
 @router.get("/api/signals")
 async def get_signals(ticker: str | None = None, limit: int = 30):
-    tickers = [ticker.upper()] if ticker else TICKERS[:4]
+    tickers = [validate_ticker(ticker)] if ticker else TICKERS
     all_signals = []
     for t in tickers:
         all_signals.extend(await fetch_signals_for_ticker(t))
@@ -86,7 +88,7 @@ async def signals_websocket(ws: WebSocket):
             else:
                 await ws.send_text(json.dumps({"type": "heartbeat"}))
             await asyncio.sleep(0.1)
-    except (WebSocketDisconnect, asyncio.TimeoutError):
+    except (TimeoutError, WebSocketDisconnect):
         pass
     finally:
         await pubsub.unsubscribe("signals")

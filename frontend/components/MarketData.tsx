@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getAllSentiment, getSentiment } from "@/lib/api";
 import api from "@/lib/api";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, ComposedChart, Area } from "recharts";
+import type { SentimentHistoryPoint, PriceHistoryPoint } from "@/lib/types";
 
 const getAllPrices = () => api.get("/api/prices/").then(r => r.data);
 const getPriceHistory = (ticker: string) => api.get(`/api/prices/${ticker}/history`, { params: { hours: 24 } }).then(r => r.data);
@@ -14,12 +15,18 @@ const COLORS: Record<string, string> = {
 const ALL_TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"];
 const card = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 16 };
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+type TooltipProps = {
+  active?: boolean;
+  payload?: { dataKey?: string; stroke?: string; fill?: string; value?: number | string }[];
+  label?: string | number;
+};
+
+const CustomTooltip = ({ active, payload, label }: TooltipProps) => {
   if (!active || !payload?.length) return null;
   return (
     <div style={{ background: "var(--surface-2)", border: "1px solid var(--border-strong)", borderRadius: 8, padding: "8px 12px", fontSize: 11 }}>
       <div style={{ color: "var(--muted)", marginBottom: 6 }}>{label}</div>
-      {payload.map((p: any) => (
+      {payload.map((p) => (
         <div key={p.dataKey} style={{ color: p.stroke || p.fill, marginBottom: 2 }}>
           {p.dataKey}: {typeof p.value === "number" ? p.value.toFixed(2) : p.value}
         </div>
@@ -33,15 +40,15 @@ function CorrelationChart({ ticker }: { ticker: string }) {
   const { data: priceData } = useQuery({ queryKey: ["priceHistory", ticker], queryFn: () => getPriceHistory(ticker) });
 
   const sentMap: Record<string, number> = {};
-  (sentData?.history ?? []).forEach((p: any) => {
+  (sentData?.history ?? []).forEach((p: SentimentHistoryPoint) => {
     const h = new Date(p.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     sentMap[h] = p.value;
   });
 
-  const merged = (priceData ?? []).map((p: any) => {
+  const merged = (priceData ?? []).map((p: PriceHistoryPoint) => {
     const h = new Date(p.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     return { time: h, price: p.price, sentiment: sentMap[h] ?? null };
-  }).filter((p: any) => p.price);
+  }).filter((p: { time: string; price: number; sentiment: number | null }) => p.price);
 
   return (
     <div style={card}>
@@ -71,10 +78,10 @@ function CorrelationChart({ ticker }: { ticker: string }) {
 
 export default function MarketData() {
   const { data: allSent } = useQuery({ queryKey: ["allSentiment"], queryFn: getAllSentiment, refetchInterval: 60000 });
-  const { data: allPrices, refetch: refetchPrices } = useQuery({ queryKey: ["allPrices"], queryFn: getAllPrices, refetchInterval: 300000 });
+  const { data: allPrices } = useQuery({ queryKey: ["allPrices"], queryFn: getAllPrices, refetchInterval: 300000 });
 
-  const sentMap = Object.fromEntries((allSent ?? []).map((s: any) => [s.ticker, s]));
-  const priceMap = Object.fromEntries((allPrices ?? []).map((p: any) => [p.ticker, p]));
+  const sentMap = Object.fromEntries((allSent ?? []).map((s: { ticker: string; composite?: number; label?: string }) => [s.ticker, s]));
+  const priceMap = Object.fromEntries((allPrices ?? []).map((p: { ticker: string; price?: number; change_pct?: number }) => [p.ticker, p]));
 
   const histories = ALL_TICKERS.map(t => ({
     ticker: t,
@@ -82,9 +89,9 @@ export default function MarketData() {
     data: useQuery({ queryKey: ["sentiment", t], queryFn: () => getSentiment(t) }).data?.history ?? []
   }));
 
-  const histMap: Record<string, any> = {};
+  const histMap: Record<string, Record<string, string | number>> = {};
   histories.forEach(({ ticker, data }) => {
-    data.forEach((p: any) => {
+    data.forEach((p: SentimentHistoryPoint) => {
       const t = new Date(p.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       if (!histMap[t]) histMap[t] = { time: t };
       histMap[t][ticker] = p.value;

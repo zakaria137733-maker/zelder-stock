@@ -1,3 +1,7 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 from services.lstm_predictor import fetch_training_data, build_sequences, SentimentLSTM, SCALER_PATH, FEATURES, SEQUENCE_LEN, HIDDEN_SIZE, EPOCHS, LR

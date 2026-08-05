@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
+
 from bson import ObjectId
+from pydantic import BaseModel
 
 
 class PyObjectId(str):
@@ -67,7 +67,6 @@ class SentimentOut(BaseModel):
 
 class TradeCreate(BaseModel):
     ticker:str
-    side:str  
+    side:str
     price:float
     quantity:int
-    customer_id:str=""

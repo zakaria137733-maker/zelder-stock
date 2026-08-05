@@ -2,9 +2,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { getSentiment, getAllSentiment, getSignals, getTransactions } from "@/lib/api";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
-import { TrendingUp, TrendingDown, Minus, Activity, Users, DollarSign, BarChart2 } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, Activity, Users, DollarSign, BarChart2, type LucideIcon } from "lucide-react";
 import AlertsPanel from "@/components/Alerts";
 import Predictions from "@/components/Predictions";
+import type { Signal, Trade } from "@/lib/types";
 
 const card = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 16 };
 const dbBadge = (type: "influx" | "mongo") => ({
@@ -13,7 +14,13 @@ const dbBadge = (type: "influx" | "mongo") => ({
   color: type === "mongo" ? "var(--green)" : "#60a5fa"
 });
 
-function KPI({ label, value, delta, up, icon: Icon }: any) {
+function KPI({ label, value, delta, up, icon: Icon }: {
+  label: string;
+  value: string | number;
+  delta: string | number;
+  up: boolean | null;
+  icon: LucideIcon;
+}) {
   const color = up === true ? "var(--green)" : up === false ? "var(--red)" : "var(--muted)";
   return (
     <div style={card}>
@@ -29,11 +36,17 @@ function KPI({ label, value, delta, up, icon: Icon }: any) {
   );
 }
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+type TooltipProps = {
+  active?: boolean;
+  payload?: { value?: number }[];
+  label?: string;
+};
+
+const CustomTooltip = ({ active, payload, label }: TooltipProps) => {
   if (!active || !payload?.length) return null;
   return (
     <div style={{ background: "var(--surface-2)", border: "1px solid var(--border-strong)", borderRadius: 8, padding: "8px 12px", fontSize: 11 }}>
-      <div style={{ color: "var(--muted)", marginBottom: 4 }}>{new Date(label).toLocaleTimeString()}</div>
+      <div style={{ color: "var(--muted)", marginBottom: 4 }}>{new Date(label ?? 0).toLocaleTimeString()}</div>
       <div style={{ color: "var(--text)", fontWeight: 500 }}>Score: {payload[0]?.value?.toFixed(1)}</div>
     </div>
   );
@@ -127,7 +140,7 @@ export default function Dashboard({ ticker }: { ticker: string }) {
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }}>
             {feed.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "20px 0" }}>No signals — run the collector</div>}
-            {feed.slice(0, 8).map((s: any, i: number) => (
+            {feed.slice(0, 8).map((s: Signal, i: number) => (
               <div key={i} style={{ padding: "9px 10px", borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
                 <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: 3 }}>{s.source_name || s.source}</div>
                 <div style={{ fontSize: 12, color: "var(--text)", lineHeight: 1.4, marginBottom: 6 }}>{s.title}</div>
@@ -153,7 +166,7 @@ export default function Dashboard({ ticker }: { ticker: string }) {
             SELECT * FROM trades WHERE ticker=&apos;{ticker}&apos;
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 240, overflowY: "auto" }}>
-            {trades.slice(0, 15).map((t: any, i: number) => (
+            {trades.slice(0, 15).map((t: Trade, i: number) => (
               <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px", borderRadius: 6, background: "var(--surface-2)", fontSize: 11 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span style={{

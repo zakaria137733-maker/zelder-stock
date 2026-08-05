@@ -1,19 +1,17 @@
-from fastapi import APIRouter, HTTPException
-from services.redis_client import cache_get, cache_set
-from services.news_collector import fetch_news_for_ticker
-from services.sentiment import compute_composite
+from fastapi import APIRouter
+
 from services import influx
+from services.news_collector import fetch_news_for_ticker
+from services.redis_client import cache_get
+from services.sentiment import compute_composite
+from tickers import TICKERS, validate_ticker
 
 router = APIRouter(prefix="/api/sentiment", tags=["sentiment"])
-
-TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
 
 
 @router.get("/{ticker}")
 async def get_sentiment(ticker: str):
-    ticker = ticker.upper()
-    if ticker not in TICKERS:
-        raise HTTPException(404, f"Ticker {ticker} not tracked")
+    ticker = validate_ticker(ticker)
 
     # Try cache first
     cached = cache_get(f"composite:{ticker}")
@@ -44,7 +42,7 @@ async def get_sentiment(ticker: str):
 
 @router.get("/{ticker}/history")
 async def get_history(ticker: str, hours: int = 24):
-    ticker = ticker.upper()
+    ticker = validate_ticker(ticker)
     return {"ticker": ticker, "history": influx.query_sentiment_history(ticker, hours)}
 
 
