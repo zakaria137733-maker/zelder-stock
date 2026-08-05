@@ -154,6 +154,22 @@ committed `lstm_model.pt` + `scaler.json` and asserts the serving pipeline
 produces sane probabilities — so the shipped artifact is under test, not just
 some freshly-trained twin.
 
+**Walk-forward harness.** `scripts/eval_walkforward.py` (offline by default,
+`--ticker` for real data) evaluates any predictor time-ordered — training only on
+past windows — against the three "no signal" baselines: coin flip (0.5), the
+majority-up prior, and trailing momentum continuation. A causal logistic model is
+included as a reference model:
+
+```bash
+python scripts/eval_walkforward.py                    # synthetic, fully offline
+docker-compose exec api python scripts/eval_walkforward.py --ticker AAPL --days 365
+```
+
+Current result on real AAPL (250 daily bars, 188 windows): **momentum 60.4% /
+majority 60.3% vs logistic 54.9%** — the simple model does not beat the trivial
+momentum rule. That is the honest bar any future model must clear. The harness
+lives in `services/walkforward.py` with its own offline pytest suite.
+
 **Caveats (read this before quoting accuracy numbers anywhere):**
 
 - Sentiment-driven short-horizon price direction is a **hard and noisy problem**;
