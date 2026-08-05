@@ -47,6 +47,17 @@ services:
       timeout: 3s
       retries: 5
 
+  temporal:
+    image: temporalio/temporal:latest
+    container_name: siq_temporal
+    command: server start-dev --ip 0.0.0.0 --db-filename /data/temporal.db
+    user: root
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    volumes:
+      - temporal_data:/data
+
   api:
     build:
       context: ./backend
@@ -89,6 +100,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      temporal:
+        condition: service_started
     environment:
       MONGO_URI: mongodb://mongodb:27017/sentimentiq
       INFLUX_URL: http://influxdb:8086
@@ -96,12 +109,14 @@ services:
       INFLUX_ORG: sentimentiq
       INFLUX_BUCKET: sentiment_scores
       REDIS_URL: redis://redis:6379
+      TEMPORAL_URL: temporal:7233
       NEWS_API_KEY: ${NEWS_API_KEY}
       USE_FINBERT: "true"
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: /app
-    command: celery -A workers.celery_app worker --beat --loglevel=info --concurrency=2
+    command: python workers/temporal_worker.py
 
 volumes:
   mongo_data:
   influx_data:
+  temporal_data:

@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     influx_org: str = "sentimentiq"
     influx_bucket: str = "sentiment_scores"
     redis_url: str = "redis://localhost:6379"
+    temporal_url: str = "localhost:7233"
     news_api_key: str = ""
 
     model_config = SettingsConfigDict(
