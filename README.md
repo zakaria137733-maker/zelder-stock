@@ -141,8 +141,18 @@ to raw features before the forward pass.
 **Serving parity.** The prediction endpoint (`routers/predictions.py`) runs the
 **exact same code path** used for evaluation — raw features → `scaler.json` →
 ensemble forward — so what you measure in evaluation is what you serve.
-`scripts/test_baselines.py` reports accuracy of the *deployed* artifact by calling
-`evaluate_deployed()`, not a freshly retrained model.
+`scripts/eval_deployed.py AAPL --days 120` reports accuracy of the *deployed*
+artifact by calling `evaluate_deployed()`, not a freshly retrained model, and can
+write a JSON report:
+
+```bash
+docker-compose exec api python scripts/eval_deployed.py AAPL --days 120 --json-out models/eval_report.json
+```
+
+The `test_deployed_artifact_scores_on_synthetic_data` pytest also loads the
+committed `lstm_model.pt` + `scaler.json` and asserts the serving pipeline
+produces sane probabilities — so the shipped artifact is under test, not just
+some freshly-trained twin.
 
 **Caveats (read this before quoting accuracy numbers anywhere):**
 
@@ -150,6 +160,9 @@ ensemble forward — so what you measure in evaluation is what you serve.
   single-digit edge over 50% is realistic even for much larger systems.
 - The dataset is short (90 days of daily bars per ticker) and daily-aggregated,
   so sample counts are small and results are not statistically robust.
+- A recent run of `eval_deployed.py` on AAPL (120 days, 59 windows) scored
+  **0.31 accuracy vs a 0.71 up-majority baseline** — honest, and it shows why
+  this powers a dashboard signal rather than autonomous trading.
 - `scripts/test_ensemble.py`, `test_walkforward.py`, `test_permutation.py`, and
   `test_generalization.py` train **their own** models with their own hyperparameters
   and do **not** measure the deployed artifact — treat their numbers separately.
@@ -158,15 +171,30 @@ ensemble forward — so what you measure in evaluation is what you serve.
 ## Testing & CI
 
 ```bash
+# backend
 cd backend
 pip install -r requirements.txt pytest ruff
-pytest -q          # 27 unit tests: auth, admin auth, IDOR, ticker validation, ML pipeline
+pytest -q          # unit + integration: auth, admin auth, IDOR, ticker validation, ML pipeline
 ruff check .       # lint
+
+# frontend
+cd frontend
+npm ci
+npm run test       # vitest: auth redirect flow, login, components
+npx tsc --noEmit   # type-check
+npm run lint       # eslint
 ```
 
-Tests run against an in-memory fake DB — no live Mongo/Influx/Redis needed. GitHub
-Actions (`.github/workflows/ci.yml`) runs pytest + ruff on the backend and
-`tsc --noEmit` + eslint on the frontend on every push/PR.
+- Unit tests run against an in-memory fake DB — no live services needed.
+- `tests/test_integration_services.py` exercises the **real** Mongo / Influx /
+  Redis modules (`services/mongo.py`, `redis_client.py`, `influx.py`) end-to-end.
+  They auto-skip when the services are down and run for real in CI (which starts
+  them as service containers) or locally with `docker-compose up -d`.
+- Frontend tests (vitest + Testing Library) cover the login/admin auth flow, the
+  `/login` redirect gate, and component rendering/error states.
+- GitHub Actions (`.github/workflows/ci.yml`) runs ruff + pytest (with Mongo /
+  Influx / Redis service containers) on the backend, and `tsc --noEmit` + eslint
+  + vitest on the frontend, on every push/PR.
 
 ## Project layout
 
@@ -178,13 +206,14 @@ backend/
   routers/              API route modules
   services/             auth, influx, mongo, redis, sentiment, alerts, lstm_predictor
   workers/              Temporal worker, activities, workflows
-  tests/                pytest suite (offline, fake DB)
-  scripts/              One-off / operational scripts (seed, collect, train, backtest)
+  tests/                pytest suite (unit: offline fake DB; integration: real services)
+  scripts/              One-off / operational scripts (seed, collect, train, backtest, eval)
   models/               Trained artifacts (lstm_model*.pt, scaler.json)
 frontend/
   app/                  Next.js app router (login, dashboard)
   components/           UI components (charts, signal feed, customers table)
   lib/api.ts            Axios client with JWT interceptor
+  __tests__/            Vitest + Testing Library (auth flow, components)
 ```
 
 ## Security notes

@@ -9,7 +9,7 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score
 from torch.utils.data import DataLoader, TensorDataset
 
-MODEL_DIR = "/app/models"
+MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
 MODEL_PATH = f"{MODEL_DIR}/lstm_model.pt"
 SCALER_PATH = f"{MODEL_DIR}/scaler.json"
 
@@ -493,6 +493,35 @@ def ensemble_forward(X_scaled: np.ndarray) -> np.ndarray | None:
         with torch.no_grad():
             probs += m(X).view(-1).numpy()
     return probs / len(models)
+
+
+def build_eval_sequences(rows, horizon=5):
+    """Build (X_raw, y) windows from daily rows for evaluating the deployed artifact.
+
+    Uses the exact training-time label convention from build_sequences(): forward
+    return over `horizon` bars, >+1% up, <-1% down, neutral skipped. Each window is
+    built with build_raw_features() (the same path used by /api/predictions), so the
+    evaluation measures the shipped model on the same inputs it serves.
+    """
+    X_raw, y = [], []
+    for i in range(SEQUENCE_LEN, len(rows) - horizon):
+        window = build_raw_features(rows[: i + 1])
+        if window is None:
+            continue
+        cur = rows[i]["price"]
+        nxt = rows[i + horizon]["price"]
+        pct = (nxt - cur) / cur * 100 if cur else 0
+        if pct > 1.0:
+            label = 1
+        elif pct < -1.0:
+            label = 0
+        else:
+            continue
+        X_raw.append(window)
+        y.append(label)
+    if not X_raw:
+        return np.empty((0, SEQUENCE_LEN, FEATURES), dtype=np.float32), np.empty((0,), dtype=np.float32)
+    return np.array(X_raw, dtype=np.float32), np.array(y, dtype=np.float32)
 
 
 def evaluate_deployed(X_raw_val, y_val):

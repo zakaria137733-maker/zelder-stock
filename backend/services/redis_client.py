@@ -16,7 +16,7 @@ def get_client() -> redis_lib.Redis:
 
 
 def cache_set(key: str, value: dict | list, ttl: int = 1800):
-    get_client().setex(key, ttl, json.dumps(value))
+    get_client().set(key, json.dumps(value), ex=ttl)
 
 
 def cache_get(key: str) -> dict | list | None:
