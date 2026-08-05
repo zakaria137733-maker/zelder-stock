@@ -69,30 +69,75 @@ def _momentum(window):
     return predict
 
 
+def _trailing_features(prices, idxs, lookback=(1, 5, 10)):
+    """Shared causal feature rows: trailing N-day returns + trailing 5-day vol."""
+    rows = []
+    for i in idxs:
+        i = int(i)
+        row = [trailing_return(prices, i, w) for w in lookback]
+        if i >= 5:
+            daily = []
+            for j in range(1, 6):
+                prev = prices[i - j]
+                if prev:
+                    daily.append((prices[i - j + 1] - prev) / prev * 100.0)
+            row.append(float(np.std(daily)) if daily else 0.0)
+        else:
+            row.append(0.0)
+        rows.append(row)
+    return np.array(rows)
+
+
+def _xgboost_available() -> bool:
+    try:
+        import xgboost  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def _logistic(prices, train_idxs, train_ys, test_idxs, lookback=(1, 5, 10)):
     from sklearn.linear_model import LogisticRegression
-
-    def feats(idxs):
-        rows = []
-        for i in idxs:
-            row = [trailing_return(prices, int(i), w) for w in lookback]
-            if i >= 5:
-                daily = []
-                for j in range(1, 6):
-                    prev = prices[i - j]
-                    if prev:
-                        daily.append((prices[i - j + 1] - prev) / prev * 100.0)
-                row.append(float(np.std(daily)) if daily else 0.0)
-            else:
-                row.append(0.0)
-            rows.append(row)
-        return np.array(rows)
 
     if len(train_ys) < 10 or len(np.unique(train_ys)) < 2:
         return np.full(len(test_idxs), float(train_ys.mean() >= 0.5))
     clf = LogisticRegression(max_iter=2000)
-    clf.fit(feats(train_idxs), np.array(train_ys, dtype=float))
-    return clf.predict(feats(test_idxs))
+    clf.fit(_trailing_features(prices, train_idxs, lookback), np.array(train_ys, dtype=float))
+    return clf.predict(_trailing_features(prices, test_idxs, lookback))
+
+
+def _xgboost(prices, train_idxs, train_ys, test_idxs, lookback=(1, 5, 10)):
+    from xgboost import XGBClassifier
+
+    if len(train_ys) < 20 or len(np.unique(train_ys)) < 2:
+        return np.full(len(test_idxs), float(train_ys.mean() >= 0.5))
+    clf = XGBClassifier(
+        n_estimators=200,
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        n_jobs=1,
+        eval_metric="logloss",
+    )
+    clf.fit(_trailing_features(prices, train_idxs, lookback), np.array(train_ys, dtype=int))
+    return clf.predict(_trailing_features(prices, test_idxs, lookback))
+
+
+def _mlp(prices, train_idxs, train_ys, test_idxs, lookback=(1, 5, 10)):
+    from sklearn.neural_network import MLPClassifier
+
+    if len(train_ys) < 20 or len(np.unique(train_ys)) < 2:
+        return np.full(len(test_idxs), float(train_ys.mean() >= 0.5))
+    clf = MLPClassifier(
+        hidden_layer_sizes=(32, 16),
+        max_iter=400,
+        early_stopping=True,
+        n_iter_no_change=10,
+        random_state=42,
+    )
+    clf.fit(_trailing_features(prices, train_idxs, lookback), np.array(train_ys, dtype=int))
+    return clf.predict(_trailing_features(prices, test_idxs, lookback))
 
 
 def evaluate(
@@ -103,12 +148,14 @@ def evaluate(
     start=10,
     momentum_window=5,
     min_train_windows=20,
+    models=None,
 ):
     """Expanding-window walk-forward evaluation.
 
     Folds are contiguous time slices over the binary-labelled windows. Fold 0 is
     only used for training; folds 1..n_folds-1 are each tested once, training on
-    all windows before the fold. Returns a summary dict, or None if there is not
+    all windows before the fold. `models` optionally restricts the methods
+    (default: all available). Returns a summary dict, or None if there is not
     enough data.
     """
     labels = binary_labels(prices, horizon, threshold_pct, start)
@@ -122,6 +169,11 @@ def evaluate(
         "momentum": _momentum(window=momentum_window),
         "logistic": _logistic,
     }
+    if _xgboost_available():
+        methods["xgboost"] = _xgboost
+    methods["mlp"] = _mlp
+    if models:
+        methods = {k: v for k, v in methods.items() if k in models}
 
     folds = []
     per_method = {name: [] for name in methods}

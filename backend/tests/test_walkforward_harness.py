@@ -41,7 +41,10 @@ def test_walk_forward_shape_and_sane_values():
     assert result is not None
     assert result["n_folds_run"] == 4
     assert len(result["folds"]) == 4
-    assert set(result["overall"]) == {"majority_prior", "momentum", "logistic"}
+    expected = {"majority_prior", "momentum", "logistic", "mlp"}
+    if wf._xgboost_available():
+        expected.add("xgboost")
+    assert set(result["overall"]) == expected
     for value in result["overall"].values():
         assert 0.0 <= value <= 1.0
 
@@ -57,3 +60,33 @@ def test_logistic_not_worse_than_momentum_on_autocorrelated_series():
 
 def test_evaluate_none_when_insufficient_data():
     assert wf.evaluate([100.0] * 15) is None
+
+
+def test_models_filter_restricts_methods():
+    prices = wf.synthetic_prices(n=800, seed=11)
+    result = wf.evaluate(prices, n_folds=5, models=["majority_prior", "momentum"])
+    assert result is not None
+    assert set(result["overall"]) == {"majority_prior", "momentum"}
+
+
+def test_mlp_sane_and_not_worse_than_coin_flip():
+    prices = wf.synthetic_prices(n=1200, seed=13, momentum=0.25)
+    result = wf.evaluate(prices, n_folds=5, models=["mlp"])
+    assert result is not None
+    assert result["overall"]["mlp"] > 0.5
+
+
+def test_xgboost_present_and_sane_when_installed():
+    pytest.importorskip("xgboost")
+    prices = wf.synthetic_prices(n=1200, seed=15, momentum=0.25)
+    result = wf.evaluate(prices, n_folds=5, models=["xgboost"])
+    assert result is not None
+    assert result["overall"]["xgboost"] > 0.5
+
+
+def test_threshold_changes_window_count():
+    prices = wf.synthetic_prices(n=800, seed=17)
+    loose = wf.evaluate(prices, n_folds=5, threshold_pct=0.5)
+    tight = wf.evaluate(prices, n_folds=5, threshold_pct=3.0)
+    assert loose is not None and tight is not None
+    assert loose["n_windows_total"] > tight["n_windows_total"]
