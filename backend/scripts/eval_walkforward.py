@@ -50,36 +50,72 @@ def main() -> int:
     parser.add_argument("--n-folds", type=int, default=5)
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--momentum-window", type=int, default=5)
+    parser.add_argument("--threshold", type=float, default=1.0,
+                        help="label move threshold in %% (ignored with --thresholds)")
+    parser.add_argument("--thresholds", default="",
+                        help="comma list, e.g. '0.5,1.0,1.5,2.0' to sweep the label threshold")
+    parser.add_argument("--models", default="",
+                        help="comma list to restrict methods, e.g. 'logistic,xgboost'")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--json-out", default="")
     args = parser.parse_args()
 
     prices, source = load_prices(args)
-    result = wf.evaluate(
-        prices,
-        n_folds=args.n_folds,
-        horizon=args.horizon,
-        momentum_window=args.momentum_window,
-    )
-    if result is None:
-        print("Not enough labelled windows to evaluate.")
+    models = [m.strip() for m in args.models.split(",") if m.strip()] or None
+    thresholds = [float(t.strip()) for t in args.thresholds.split(",") if t.strip()] or [args.threshold]
+
+    rows = []
+    for thresh in thresholds:
+        result = wf.evaluate(
+            prices,
+            n_folds=args.n_folds,
+            horizon=args.horizon,
+            threshold_pct=thresh,
+            momentum_window=args.momentum_window,
+            models=models,
+        )
+        if result is None:
+            print(f"Not enough labelled windows at threshold {thresh:g}%.")
+            continue
+        rows.append((thresh, result))
+
+    if not rows:
         return 1
 
     print(f"Source: {source}")
-    print(f"Label: {args.horizon}-day forward move +/-1% - windows: {result['n_windows_total']} - "
-          f"folds: {result['n_folds_run']}\n")
-    print(f"{'method':<16}{'fold accs':<42}{'mean':>7}")
-    print("-" * 65)
-    rows = result["folds"]
-    for name, mean_acc in result["overall"].items():
-        fold_accs = "  ".join(f"{r[name]:.1%}" for r in rows)
-        print(f"{name:<16}{fold_accs:<42}{mean_acc:>7.1%}")
-    print(f"{'coin flip (ref)':<16}{'':<42}{0.5:>7.1%}")
+    if len(rows) == 1:
+        thresh, result = rows[0]
+        print(f"Label: {args.horizon}-day forward move +/-{thresh:g}% - windows: {result['n_windows_total']} - "
+              f"folds: {result['n_folds_run']}\n")
+        print(f"{'method':<16}{'fold accs':<42}{'mean':>7}")
+        print("-" * 65)
+        for name, mean_acc in result["overall"].items():
+            fold_accs = "  ".join(f"{r[name]:.1%}" for r in result["folds"])
+            print(f"{name:<16}{fold_accs:<42}{mean_acc:>7.1%}")
+        print(f"{'coin flip (ref)':<16}{'':<42}{0.5:>7.1%}")
+    else:
+        names = list(rows[0][1]["overall"].keys())
+        print(f"Label: {args.horizon}-day forward move beyond threshold - windows/fold vary by threshold\n")
+        print(f"{'threshold':<12}{'windows':>8}" + "".join(f"{n:>12}" for n in names) + f"{'coin(0.5)':>12}")
+        print("-" * (12 + 8 + 12 * len(names) + 12))
+        for thresh, result in rows:
+            line = f"{thresh:g}%".ljust(12) + f"{result['n_windows_total']:>8}"
+            for name in names:
+                line += f"{result['overall'][name]:>12.1%}"
+            line += f"{0.5:>12.1%}"
+            print(line)
 
     print("\nWhat counts as signal: any method clearly above the majority/momentum baselines.")
     if args.json_out:
+        report = {
+            "source": source,
+            "params": vars(args),
+            "results": [
+                {"threshold_pct": thresh, **result} for thresh, result in rows
+            ],
+        }
         with open(args.json_out, "w") as f:
-            json.dump({"source": source, "params": vars(args), **result}, f, indent=2)
+            json.dump(report, f, indent=2)
         print(f"Report written to {args.json_out}")
     return 0
 

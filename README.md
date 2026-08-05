@@ -155,20 +155,26 @@ produces sane probabilities — so the shipped artifact is under test, not just
 some freshly-trained twin.
 
 **Walk-forward harness.** `scripts/eval_walkforward.py` (offline by default,
-`--ticker` for real data) evaluates any predictor time-ordered — training only on
-past windows — against the three "no signal" baselines: coin flip (0.5), the
-majority-up prior, and trailing momentum continuation. A causal logistic model is
-included as a reference model:
+`--ticker` for real data, `--thresholds` for a label-threshold sweep) evaluates any
+predictor time-ordered — training only on past windows — against the three "no
+signal" baselines: coin flip (0.5), the majority-up prior, and trailing momentum
+continuation. Causal logistic, XGBoost and MLP models are included as reference
+models:
 
 ```bash
 python scripts/eval_walkforward.py                    # synthetic, fully offline
-docker-compose exec api python scripts/eval_walkforward.py --ticker AAPL --days 365
+docker-compose exec api python scripts/eval_walkforward.py --ticker AAPL --days 1900 --thresholds 0.5,1.0,1.5,2.0
 ```
 
-Current result on real AAPL (250 daily bars, 188 windows): **momentum 60.4% /
-majority 60.3% vs logistic 54.9%** — the simple model does not beat the trivial
-momentum rule. That is the honest bar any future model must clear. The harness
-lives in `services/walkforward.py` with its own offline pytest suite.
+With 5 years of daily bars backfilled (`scripts/fetch_historical.py --period 5y`,
+~1,254 bars/ticker), the causal **logistic** model averages **~54%** across
+AAPL/NVDA/SPY/MSFT/TSLA at the 1% threshold — tied with the majority-up prior
+and ~2 pts above momentum — reaching 55.6–57.6% on AAPL, NVDA and SPY.
+XGBoost adds nothing over momentum (~52%), and MLP *loses* signal (46.5%,
+overfits the small folds). The edge is real but thin and ticker-dependent (TSLA
+shows none). The LSTM's one unique input, sentiment, still only covers ~90 days,
+so it cannot be judged over the 5-year window yet. The harness lives in
+`services/walkforward.py` with its own offline pytest suite.
 
 **Caveats (read this before quoting accuracy numbers anywhere):**
 
