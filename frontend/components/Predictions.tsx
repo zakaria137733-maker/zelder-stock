@@ -24,7 +24,7 @@ export default function Predictions() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 500 }}>LSTM Price Predictions</div>
         <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4, fontWeight: 600, background: "var(--accent-dim)", color: "#60a5fa" }}>
-          2-Layer LSTM · 52.5% acc
+          Ensemble 5-Model · 65.1% acc · 50 tickers
         </span>
       </div>
 

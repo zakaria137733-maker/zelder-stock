@@ -17,7 +17,7 @@ FEATURES = 12
 HIDDEN_SIZE = 32
 NUM_LAYERS = 1
 DROPOUT = 0.5
-EPOCHS = 300
+EPOCHS = 160
 LR = 0.001
 
 
@@ -101,7 +101,15 @@ def fetch_training_data():
     from config import settings
     client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
     query_api = client.query_api()
-    tickers = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
+    tickers = [
+    "AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META",
+    "AMD", "INTC", "QCOM", "AVGO", "MU", "SMCI", "ARM",
+    "JPM", "BAC", "GS", "MS", "V", "MA", "BRK-B",
+    "JNJ", "PFE", "UNH", "MRNA", "ABBV", "LLY",
+    "XOM", "CVX", "SLB", "COP",
+    "WMT", "HD", "NKE", "MCD", "SBUX", "COST",
+    "CRM", "SNOW", "PLTR", "NET", "DDOG", "NOW",
+    "SPY", "QQQ", "IWM", "XLK", "XLF", "XLE"]
     all_data = []
 
     for ticker in tickers:
@@ -294,14 +302,14 @@ def train():
     print(f"Built {len(X)} training sequences")
     print(f"Class balance: {y.mean():.1%} up, {1-y.mean():.1%} down")
 
-    # Time-based split FIRST — no data leakage
+    
     split = int(0.8 * len(X))
     X_train_raw = X[:split]
     y_train_raw = y[:split]
     X_val_raw = X[split:]
     y_val_raw = y[split:]
 
-    # Balance training set only
+
     up_idx = np.where(y_train_raw == 1)[0]
     down_idx = np.where(y_train_raw == 0)[0]
     min_count = min(len(up_idx), len(down_idx))
@@ -313,11 +321,10 @@ def train():
     y_train_raw = y_train_raw[balanced_idx]
     print(f"Balanced train: {len(X_train_raw)} | Val: {len(X_val_raw)}")
 
-    # Clip outliers
+    
     X_train_clipped = np.clip(X_train_raw, -5, 5)
     X_val_clipped = np.clip(X_val_raw, -5, 5)
 
-    # Save dummy scaler for predict() compatibility
     scaler_params = {str(f): {"min": 0.0, "range": 1.0} for f in range(FEATURES)}
     with open(SCALER_PATH, "w") as f:
         json.dump(scaler_params, f)
@@ -348,7 +355,6 @@ def train():
             optimizer.zero_grad()
             pred = model(X_batch).view(-1)
             loss = criterion(pred, y_batch)
-            # L1 regularization
             l1_norm = sum(p.abs().sum() for p in model.parameters())
             loss = loss + 1e-4 * l1_norm
             loss.backward()

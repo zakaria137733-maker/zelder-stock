@@ -130,7 +130,7 @@ def query_price_history(ticker: str, hours: int = 24) -> list[dict]:
     query_api = client.query_api()
     flux = (
         f'from(bucket: "sentiment_scores")'
-        f' |> range(start: -7d)'
+        f' |> range(start: -30d)'
         f' |> filter(fn: (r) => r._measurement == "prices" and r.ticker == "{ticker}" and r._field == "close")'
         f' |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)'
         f' |> sort(columns: ["_time"])'
