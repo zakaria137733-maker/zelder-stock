@@ -11,6 +11,26 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+      influxdb:
+        image: influxdb:2.7
+        ports:
+          - 8086:8086
+        env:
+          DOCKER_INFLUXDB_INIT_MODE: setup
+          DOCKER_INFLUXDB_INIT_USERNAME: admin
+          DOCKER_INFLUXDB_INIT_PASSWORD: password123
+          DOCKER_INFLUXDB_INIT_ORG: sentimentiq
+          DOCKER_INFLUXDB_INIT_BUCKET: stock_trades
+          DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: sentimentiq-super-secret-token
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,3 +64,5 @@ jobs:
         run: npx tsc --noEmit
       - name: Lint
         run: npm run lint
+      - name: Test
+        run: npm run test

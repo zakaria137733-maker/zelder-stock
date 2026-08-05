@@ -1,9 +1,13 @@
 # Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # Python model/checkpoints
 *.pt
+# The single deployed LSTM checkpoint is intentionally committed so the container
+# ships with a working model; ensemble seeds (lstm_model_<seed>.pt) stay ignored.
+!backend/models/lstm_model.pt
 
 # Environment
 .env

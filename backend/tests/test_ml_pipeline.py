@@ -93,6 +93,22 @@ def test_daily_returns():
     assert np.isclose(r["2026-01-03"], -10.0)
 
 
+def test_build_eval_sequences_matches_label_convention():
+    # monotonic +1/day prices → forward return over horizon 5 is well above +1%
+    rows = _rows(30)
+    X, y = lsp.build_eval_sequences(rows, horizon=5)
+    assert len(X) == len(y)
+    assert X.shape[1:] == (lsp.SEQUENCE_LEN, lsp.FEATURES)
+    assert set(np.unique(y)).issubset({0, 1})
+    assert (y == 1).all()  # all windows moved up by more than 1%
+
+
+def test_build_eval_sequences_insufficient_data():
+    X, y = lsp.build_eval_sequences(_rows(10), horizon=5)
+    assert len(X) == 0
+    assert len(y) == 0
+
+
 def test_ensemble_predict_graceful_when_not_trained(monkeypatch, tmp_path):
     monkeypatch.setattr(preds, "SCALER_PATH", str(tmp_path / "scaler.json"))
     monkeypatch.setattr(preds, "MODEL_DIR", str(tmp_path))
@@ -108,3 +124,23 @@ def test_evaluate_deployed_returns_none_without_models(monkeypatch, tmp_path):
     X = np.zeros((3, 10, 12), dtype=np.float32)
     y = np.array([1, 0, 1])
     assert lsp.evaluate_deployed(X, y) is None
+
+
+def test_deployed_artifact_scores_on_synthetic_data(monkeypatch):
+    """Score the model artifact that ships with the repo (lstm_model.pt + scaler.json)."""
+    import os
+
+    models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+    assert os.path.exists(os.path.join(models_dir, "lstm_model.pt")), "expected committed model artifact"
+    monkeypatch.setattr(lsp, "MODEL_DIR", models_dir)
+    monkeypatch.setattr(lsp, "MODEL_PATH", os.path.join(models_dir, "lstm_model.pt"))
+    monkeypatch.setattr(lsp, "SCALER_PATH", os.path.join(models_dir, "scaler.json"))
+
+    rows = _rows(30)
+    X, y = lsp.build_eval_sequences(rows, horizon=5)
+    result = lsp.evaluate_deployed(X, y)
+    assert result is not None, "deployed artifact must produce predictions"
+    acc, probs = result
+    assert 0.0 <= acc <= 1.0
+    assert probs.shape == y.shape
+    assert np.all((probs >= 0) & (probs <= 1))
