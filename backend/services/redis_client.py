@@ -1,5 +1,8 @@
+import hashlib
 import json
+
 import redis as redis_lib
+
 from config import settings
 
 _client: redis_lib.Redis | None = None
@@ -27,6 +30,6 @@ def publish_signal(signal: dict):
 
 def add_to_dedup_set(url: str, ttl: int = 86400) -> bool:
     """Returns True if the URL is new (not seen before)."""
-    key = f"seen:{hash(url)}"
+    key = "seen:" + hashlib.sha256(url.encode()).hexdigest()
     result = get_client().set(key, 1, ex=ttl, nx=True)
     return result is True

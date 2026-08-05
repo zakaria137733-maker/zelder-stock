@@ -2,6 +2,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { getAlerts } from "@/lib/api";
 import { AlertTriangle, TrendingDown, TrendingUp } from "lucide-react";
+import type { Alert } from "@/lib/types";
 
 export default function AlertsPanel() {
   const { data: alerts, refetch } = useQuery({
@@ -35,7 +36,7 @@ export default function AlertsPanel() {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {list.map((a: any, i: number) => (
+          {list.map((a: Alert, i: number) => (
             <div key={i} style={{
               padding: "10px 12px", borderRadius: 8,
               background: a.severity === "high" ? "var(--red-dim)" : "var(--amber-dim)",

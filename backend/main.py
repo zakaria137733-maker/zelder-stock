@@ -1,16 +1,19 @@
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from routers import sentiment, customers, transactions, signals, prices, alerts, predictions
-from services import mongo
-from routers import auth
-import os, asyncio
-from datetime import datetime, timezone, timedelta
+import asyncio
+import os
 import random
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+
 from config import settings
-from services.auth import hash_password
+from routers import alerts, auth, customers, predictions, prices, sentiment, signals, transactions
+from services import mongo
+from services.auth import hash_password, require_admin
+from tickers import TICKERS
 
 _last_collect = {"time": None, "status": "idle"}
 
@@ -19,10 +22,8 @@ def _run_lightweight_collect():
     try:
         _last_collect["status"] = "running"
         from routers.signals import _fetch_google_news, cache_set
-        from services.sentiment import compute_composite
         from services import influx as influx_svc
-
-        TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
+        from services.sentiment import compute_composite
 
         for ticker in TICKERS:
             try:
@@ -37,7 +38,7 @@ def _run_lightweight_collect():
             except Exception as e:
                 print(f"  {ticker} error: {e}")
 
-        _last_collect["time"] = datetime.now(timezone.utc).isoformat()
+        _last_collect["time"] = datetime.now(UTC).isoformat()
         _last_collect["status"] = "idle"
         print("Collection completed")
     except Exception as e:
@@ -86,6 +87,7 @@ app.include_router(prices.router)
 app.include_router(alerts.router)
 app.include_router(predictions.router)
 app.include_router(auth.router)
+app.include_router(auth.admin_router)
 
 
 @app.get("/health")
@@ -99,18 +101,18 @@ async def list_tickers():
 
 
 @app.post("/api/admin/collect")
-async def trigger_collect():
+async def trigger_collect(_admin=Depends(require_admin)):
     asyncio.get_event_loop().run_in_executor(None, _run_lightweight_collect)
     return {"ok": True, "message": "Collection started"}
 
 
 @app.get("/api/admin/collect/status")
-async def collect_status():
+async def collect_status(_admin=Depends(require_admin)):
     return _last_collect
 
 
 @app.post("/api/admin/seed")
-async def seed_all():
+async def seed_all(_admin=Depends(require_admin)):
     errors = []
     customer_count = 0
     influx_count = 0
@@ -135,7 +137,7 @@ async def seed_all():
         for c in CUSTOMERS:
             doc = {k: v for k, v in c.items() if k != "password"}
             doc["password_hash"] = hash_password(c["password"])
-            doc["created_at"] = datetime.now(timezone.utc) - timedelta(days=random.randint(30, 365))
+            doc["created_at"] = datetime.now(UTC) - timedelta(days=random.randint(30, 365))
             docs.append(doc)
         await db.customers.insert_many(docs)
         customer_count = len(docs)
@@ -143,7 +145,6 @@ async def seed_all():
         errors.append(f"MongoDB: {str(e)}")
 
     try:
-        TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
         BASE_SCORES = {"AAPL": 72, "TSLA": 41, "NVDA": 88, "MSFT": 68, "GOOGL": 75, "AMZN": 63, "META": 58}
         PRICES = {"AAPL": 189.42, "TSLA": 248.17, "NVDA": 876.54, "MSFT": 415.22, "GOOGL": 175.83, "AMZN": 185.60, "META": 490.32}
 
@@ -156,7 +157,7 @@ async def seed_all():
         write_api = influx_client.write_api(write_options=SYNCHRONOUS)
 
         points = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for ticker in TICKERS:
             base = BASE_SCORES[ticker]

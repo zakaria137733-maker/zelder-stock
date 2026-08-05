@@ -2,12 +2,14 @@
 NewsAPI collector — fetches headlines for each tracked ticker,
 runs sentiment analysis, writes to InfluxDB, and caches in Redis.
 """
+from datetime import UTC, datetime, timedelta
+
 import httpx
-from datetime import datetime, timezone, timedelta
+
 from config import settings
-from services.sentiment import extract_tickers, classify_sentiment, compute_composite
-from services.redis_client import cache_set, cache_get, add_to_dedup_set, publish_signal
 from services import influx
+from services.redis_client import add_to_dedup_set, cache_get, cache_set, publish_signal
+from services.sentiment import classify_sentiment, compute_composite
 
 TRACKED_TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
 
@@ -40,7 +42,7 @@ async def fetch_news_for_ticker(ticker: str) -> list[dict]:
         "sortBy": "publishedAt",
         "language": "en",
         "pageSize": 20,
-        "from": (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S"),
+        "from": (datetime.now(UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S"),
         "apiKey": settings.news_api_key,
     }
 
@@ -71,7 +73,7 @@ async def fetch_news_for_ticker(ticker: str) -> list[dict]:
         published = article.get("publishedAt", "")
         try:
             pub_dt = datetime.fromisoformat(published.replace("Z", "+00:00"))
-            age_hours = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600
+            age_hours = (datetime.now(UTC) - pub_dt).total_seconds() / 3600
         except Exception:
             age_hours = 1.0
 

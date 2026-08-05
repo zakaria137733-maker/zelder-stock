@@ -2,15 +2,22 @@
 import { useQuery } from "@tanstack/react-query";
 import { getTransactions } from "@/lib/api";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import type { Trade } from "@/lib/types";
 
 const card = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 16 };
 
-const CustomTooltip = ({ active, payload, label }: any) => {
+type TooltipProps = {
+  active?: boolean;
+  payload?: { name?: string; fill?: string; value?: number | string }[];
+  label?: string | number;
+};
+
+const CustomTooltip = ({ active, payload, label }: TooltipProps) => {
   if (!active || !payload?.length) return null;
   return (
     <div style={{ background: "var(--surface-2)", border: "1px solid var(--border-strong)", borderRadius: 8, padding: "8px 12px", fontSize: 11 }}>
       <div style={{ color: "var(--muted)", marginBottom: 4 }}>{label}</div>
-      {payload.map((p: any) => (
+      {payload.map((p) => (
         <div key={p.name} style={{ color: p.fill, marginBottom: 2 }}>{p.name}: {p.value}</div>
       ))}
     </div>
@@ -22,7 +29,7 @@ export default function Transactions({ ticker }: { ticker: string }) {
   const trades = txData?.trades ?? [];
 
   const hourly: Record<string, { buy: number; sell: number }> = {};
-  trades.forEach((t: any) => {
+  trades.forEach((t: Trade) => {
     const h = new Date(t.time).getHours() + ":00";
     if (!hourly[h]) hourly[h] = { buy: 0, sell: 0 };
     if (t.side === "buy") hourly[h].buy++;
@@ -30,9 +37,9 @@ export default function Transactions({ ticker }: { ticker: string }) {
   });
   const chartData = Object.entries(hourly).map(([time, v]) => ({ time, ...v }));
 
-  const buyCount = trades.filter((t: any) => t.side === "buy").length;
-  const sellCount = trades.filter((t: any) => t.side === "sell").length;
-  const avgPrice = trades.length ? trades.reduce((s: number, t: any) => s + (t.price ?? 0), 0) / trades.length : 0;
+  const buyCount = trades.filter((t: Trade) => t.side === "buy").length;
+  const sellCount = trades.filter((t: Trade) => t.side === "sell").length;
+  const avgPrice = trades.length ? trades.reduce((s: number, t: Trade) => s + (t.price ?? 0), 0) / trades.length : 0;
 
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -92,7 +99,7 @@ export default function Transactions({ ticker }: { ticker: string }) {
               </tr>
             </thead>
             <tbody>
-              {trades.map((t: any, i: number) => (
+              {trades.map((t: Trade, i: number) => (
                 <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td style={{ padding: "8px", fontFamily: "monospace", fontSize: 11, color: "var(--muted)" }}>{new Date(t.time).toLocaleTimeString()}</td>
                   <td style={{ padding: "8px", fontWeight: 600 }}>{t.ticker}</td>

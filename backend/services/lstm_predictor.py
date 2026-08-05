@@ -1,12 +1,13 @@
-import os
-import numpy as np
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import accuracy_score
 import json
+import os
+
+import numpy as np
 import pandas as pd
 import ta
+import torch
+import torch.nn as nn
+from sklearn.metrics import accuracy_score
+from torch.utils.data import DataLoader, TensorDataset
 
 MODEL_DIR = "/app/models"
 MODEL_PATH = f"{MODEL_DIR}/lstm_model.pt"
@@ -19,6 +20,8 @@ NUM_LAYERS = 1
 DROPOUT = 0.5
 EPOCHS = 160
 LR = 0.001
+
+ENSEMBLE_SEEDS = [42, 123, 7, 99, 2024]
 
 
 class SentimentLSTM(nn.Module):
@@ -98,6 +101,7 @@ def compute_indicators(prices: list, volumes: list, dates: list = None) -> dict:
 
 def fetch_training_data():
     from influxdb_client import InfluxDBClient
+
     from config import settings
     client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
     query_api = client.query_api()
@@ -190,9 +194,9 @@ def fetch_training_data():
     print("Fetching market indices...")
     spy_map, qqq_map, vix_map = {}, {}, {}
     index_queries = [
-        (f'from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "SPY" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', spy_map, "SPY"),
-        (f'from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "QQQ" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', qqq_map, "QQQ"),
-        (f'from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "VIX" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', vix_map, "VIX"),
+        ('from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "SPY" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', spy_map, "SPY"),
+        ('from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "QQQ" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', qqq_map, "QQQ"),
+        ('from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "VIX" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', vix_map, "VIX"),
     ]
     for flux, target, name in index_queries:
         try:
@@ -240,7 +244,7 @@ def build_sequences(data):
 
     X_all, y_all = [], []
 
-    for ticker, rows in by_ticker.items():
+    for _ticker, rows in by_ticker.items():
         rows = sorted(rows, key=lambda r: r["hour"])
         prices = [r["price"] for r in rows]
 
@@ -285,6 +289,228 @@ def build_sequences(data):
     return np.array(X_all, dtype=np.float32), np.array(y_all, dtype=np.float32)
 
 
+def load_scaler() -> dict:
+    """Load the per-feature min/max scaler saved at train time. Returns {} if absent."""
+    if not os.path.exists(SCALER_PATH):
+        return {}
+    try:
+        with open(SCALER_PATH) as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Scaler load error: {e}")
+        return {}
+
+
+def apply_scaler(window, scaler: dict) -> np.ndarray:
+    """Apply the training-time per-feature min-max scaler to a (..., FEATURES) window.
+
+    Mirrors train_ensemble.py: X = (X - min) / range per feature. Missing scaler
+    (e.g. single-model path) falls back to identity so train/serve stay consistent.
+    """
+    window = np.asarray(window, dtype=np.float32)
+    if scaler:
+        for f in range(window.shape[-1]):
+            params = scaler.get(str(f)) or scaler.get(f)
+            if not params:
+                continue
+            rng = float(params.get("range", 1.0) or 1.0)
+            mn = float(params.get("min", 0.0))
+            window[..., f] = (window[..., f] - mn) / rng
+    return np.clip(window, -5, 5)
+
+
+def build_raw_features(recent_data) -> np.ndarray | None:
+    """Build the raw (pre-scaler) feature window for a single ticker's recent_data.
+
+    Mirrors the per-step construction in build_sequences() exactly so inference
+    sees the same input distribution the model was trained on. Returns None if
+    there is not enough data.
+    """
+    if len(recent_data) < SEQUENCE_LEN:
+        return None
+
+    prices = [r["price"] for r in recent_data]
+    volumes = [r.get("volume", 0.0) for r in recent_data]
+    dates = [r.get("time", "") for r in recent_data]
+
+    if len(prices) >= 28:
+        try:
+            indicators = compute_indicators(prices, volumes, dates)
+        except Exception:
+            indicators = None
+    else:
+        indicators = None
+
+    if indicators is None:
+        n = len(prices)
+        indicators = {
+            "rsi": [50.0] * n, "macd": [0.0] * n,
+            "bb_width": [0.0] * n, "adx": [25.0] * n,
+            "obv": [0.0] * n, "stoch": [50.0] * n,
+            "williams_r": [-50.0] * n, "cci": [0.0] * n,
+        }
+
+    window = []
+    rows = recent_data[-SEQUENCE_LEN:]
+    offset = len(recent_data) - SEQUENCE_LEN
+    eps = 1e-8
+
+    for i, row in enumerate(rows):
+        idx = offset + i
+        price = row["price"]
+        prev_price = recent_data[offset + i - 1]["price"] if i > 0 else price
+        price_change = (price - prev_price) / prev_price * 100 if prev_price else 0
+
+        def ind(key, default, _idx=idx):
+            vals = indicators.get(key, [])
+            return vals[_idx] if _idx < len(vals) else default
+
+        features = [
+            row.get("sentiment", 50.0) / 100.0,
+            price_change,
+            ind("rsi", 50.0) / 100.0,
+            ind("macd", 0.0) / (price + eps) * 100,
+            ind("bb_width", 0.0),
+            ind("adx", 25.0) / 100.0,
+            np.log1p(abs(ind("obv", 0.0))) * np.sign(ind("obv", 0.0)) / 25.0,
+            ind("stoch", 50.0) / 100.0,
+            ind("williams_r", -50.0) / 100.0,
+            ind("cci", 0.0) / 200.0,
+            row.get("spy_ret", 0.0),
+            (row.get("vix", 20.0) - 20.0) / 10.0,
+        ]
+        window.append(features)
+
+    return np.array(window, dtype=np.float32)
+
+
+def _daily_returns(close_map: dict) -> dict:
+    rets = {}
+    prev = None
+    for day in sorted(close_map.keys()):
+        cur = close_map[day]
+        rets[day] = (cur - prev) / prev * 100 if prev else 0.0
+        prev = cur
+    return rets
+
+
+def fetch_live_daily_context(ticker: str, days: int = 90) -> list[dict]:
+    """Build recent_data at DAILY granularity to match fetch_training_data().
+
+    Training reads daily bars from prices_daily and daily market_index series.
+    Live inference must use the same granularity (10 daily steps, not 10 hourly).
+    Daily closes come from prices_daily overlaid with fresh daily aggregates of
+    the hourly `prices` measurement; market context (spy_ret/vix) comes from the
+    real market_index series instead of hardcoded defaults.
+    """
+    from influxdb_client import InfluxDBClient
+
+    from config import settings
+
+    client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+    query_api = client.query_api()
+    bucket = settings.influx_bucket
+    try:
+        def query_map(measurement, field, agg, tag=ticker):
+            flux = (
+                f'from(bucket: "{bucket}")'
+                f' |> range(start: -{days}d)'
+                f' |> filter(fn: (r) => r._measurement == "{measurement}"'
+                f' and r.ticker == "{tag}" and r._field == "{field}")'
+                f' |> aggregateWindow(every: 1d, fn: {agg}, createEmpty: false)'
+                f' |> sort(columns: ["_time"])'
+            )
+            out = {}
+            try:
+                for table in query_api.query(flux):
+                    for record in table.records:
+                        out[record.get_time().strftime("%Y-%m-%d")] = float(record.get_value())
+            except Exception as e:
+                print(f"Influx query error ({measurement}/{field}/{tag}): {e}")
+            return out
+
+        price_close = query_map("prices_daily", "close", "last")
+        price_volume = query_map("prices_daily", "volume", "last")
+        live_close = query_map("prices", "close", "last")
+        live_volume = query_map("prices", "volume", "last")
+        sent_map = query_map("sentiment", "composite", "mean")
+
+        price_close.update(live_close)
+        price_volume.update(live_volume)
+
+        spy_map = query_map("market_index", "close", "last", tag="SPY")
+        vix_map = query_map("market_index", "close", "last", tag="VIX")
+        spy_ret = _daily_returns(spy_map)
+
+        rows = []
+        for day in sorted(price_close.keys()):
+            rows.append({
+                "ticker": ticker,
+                "time": day,
+                "price": price_close[day],
+                "volume": price_volume.get(day, 0.0),
+                "sentiment": sent_map.get(day, 50.0),
+                "spy_ret": spy_ret.get(day, 0.0),
+                "vix": vix_map.get(day, 20.0),
+            })
+        return rows
+    finally:
+        client.close()
+
+
+def load_ensemble_models() -> list:
+    """Load the deployed 5-seed ensemble (falls back to the single model)."""
+    models = []
+    for seed in ENSEMBLE_SEEDS:
+        path = f"{MODEL_DIR}/lstm_model_{seed}.pt"
+        if os.path.exists(path):
+            try:
+                m = SentimentLSTM()
+                m.load_state_dict(torch.load(path, map_location="cpu"))
+                m.eval()
+                models.append(m)
+            except Exception as e:
+                print(f"Model {seed} load error: {e}")
+    if not models and os.path.exists(MODEL_PATH):
+        try:
+            m = SentimentLSTM()
+            m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+            m.eval()
+            models.append(m)
+        except Exception as e:
+            print(f"Single model load error: {e}")
+    return models
+
+
+def ensemble_forward(X_scaled: np.ndarray) -> np.ndarray | None:
+    """Run scaled windows through the deployed ensemble. Returns avg prob per sample."""
+    models = load_ensemble_models()
+    if not models:
+        return None
+    X = torch.tensor(np.asarray(X_scaled, dtype=np.float32))
+    probs = np.zeros(X.shape[0], dtype=np.float32)
+    for m in models:
+        with torch.no_grad():
+            probs += m(X).view(-1).numpy()
+    return probs / len(models)
+
+
+def evaluate_deployed(X_raw_val, y_val):
+    """Evaluate the ACTUAL deployed artifact (5-seed ensemble + scaler.json).
+
+    Uses the exact serving pipeline: raw features -> scaler -> ensemble forward,
+    the same code path behind /api/predictions. Returns (accuracy, probs) or None
+    if no trained model exists.
+    """
+    scaler = load_scaler()
+    X_scaled = apply_scaler(np.asarray(X_raw_val, dtype=np.float32), scaler)
+    probs = ensemble_forward(X_scaled)
+    if probs is None:
+        return None
+    preds = (probs > 0.5).astype(float)
+    return accuracy_score(np.asarray(y_val).astype(float), preds), probs
+
+
 def train():
     torch.manual_seed(123)
     np.random.seed(123)
@@ -302,7 +528,7 @@ def train():
     print(f"Built {len(X)} training sequences")
     print(f"Class balance: {y.mean():.1%} up, {1-y.mean():.1%} down")
 
-    
+
     split = int(0.8 * len(X))
     X_train_raw = X[:split]
     y_train_raw = y[:split]
@@ -321,7 +547,7 @@ def train():
     y_train_raw = y_train_raw[balanced_idx]
     print(f"Balanced train: {len(X_train_raw)} | Val: {len(X_val_raw)}")
 
-    
+
     X_train_clipped = np.clip(X_train_raw, -5, 5)
     X_val_clipped = np.clip(X_val_raw, -5, 5)
 
@@ -403,52 +629,12 @@ def predict(ticker, recent_data):
     if len(recent_data) < SEQUENCE_LEN:
         return {"error": f"Need {SEQUENCE_LEN} hours of data", "signal": "unknown"}
 
-    prices = [r["price"] for r in recent_data]
-    volumes = [r.get("volume", 0.0) for r in recent_data]
-    dates = [r.get("time", "") for r in recent_data]
+    scaler = load_scaler()
+    window = build_raw_features(recent_data)
+    if window is None:
+        return {"error": f"Need {SEQUENCE_LEN} hours of data", "signal": "unknown"}
+    X = torch.tensor(apply_scaler(window, scaler)[None], dtype=torch.float32)
 
-    indicators = compute_indicators(prices, volumes, dates) if len(prices) >= 20 else {
-        "rsi": [50.0]*len(prices), "macd": [0.0]*len(prices),
-        "bb_upper": prices, "bb_lower": prices, "bb_width": [0.0]*len(prices),
-        "ma20": prices, "ema20": prices, "ema50": prices, "atr": [0.0]*len(prices),
-        "vol_momentum": [1.0]*len(prices), "adx": [25.0]*len(prices),
-        "obv": [0.0]*len(prices), "stoch": [50.0]*len(prices),
-        "williams_r": [-50.0]*len(prices), "cci": [0.0]*len(prices),
-        "vwap": prices, "day_of_week": [0.0]*len(prices),
-    }
-
-    window = []
-    rows = recent_data[-SEQUENCE_LEN:]
-    offset = len(recent_data) - SEQUENCE_LEN
-    eps = 1e-8
-
-    for i, row in enumerate(rows):
-        idx = offset + i
-        price = row["price"]
-        prev_price = recent_data[offset + i - 1]["price"] if i > 0 else price
-        price_change = (price - prev_price) / prev_price * 100 if prev_price else 0
-
-        def ind(key, default):
-            vals = indicators.get(key, [])
-            return vals[idx] if idx < len(vals) else default
-
-        features = [
-            row.get("sentiment", 50.0) / 100.0,
-            price_change,
-            ind("rsi", 50.0) / 100.0,
-            ind("macd", 0.0) / (price + eps) * 100,
-            ind("bb_width", 0.0),
-            ind("adx", 25.0) / 100.0,
-            np.log1p(abs(ind("obv", 0.0))) * np.sign(ind("obv", 0.0)) / 25.0,
-            ind("stoch", 50.0) / 100.0,
-            ind("williams_r", -50.0) / 100.0,
-            ind("cci", 0.0) / 200.0,
-            row.get("spy_ret", 0.0),
-            (row.get("vix", 20.0) - 20.0) / 10.0,
-        ]
-        window.append(np.clip(features, -5, 5))
-
-    X = torch.tensor([window], dtype=torch.float32)
     with torch.no_grad():
         prob_up = float(model(X).view(-1).item())
 

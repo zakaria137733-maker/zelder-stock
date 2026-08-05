@@ -1,13 +1,14 @@
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
+
 from services import influx
 from services.redis_client import cache_get, cache_set
 
-SHIFT_THRESHOLD=10.0   
-WINDOW_HOURS=3          
+SHIFT_THRESHOLD=10.0
+WINDOW_HOURS=3
 
 
 def detect_alerts()->list[dict]:
-    
+
     tickers = ["AAPL","TSLA","NVDA","MSFT","GOOGL","AMZN","META"]
     alerts = []
 
@@ -32,7 +33,7 @@ def detect_alerts()->list[dict]:
                 "severity":severity,
                 "window_hours":WINDOW_HOURS,
                 "message":f"{ticker} sentiment {direction} {abs(shift):.1f} pts in {WINDOW_HOURS}h",
-                "triggered_at":datetime.now(timezone.utc).isoformat(),
+                "triggered_at":datetime.now(UTC).isoformat(),
             })
 
 

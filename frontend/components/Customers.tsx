@@ -14,6 +14,25 @@ const riskColor = (r: string) => r === "conservative"
 
 const scoreColor = (s: number) => s >= 70 ? "var(--green)" : s >= 50 ? "var(--amber)" : "var(--red)";
 
+type Customer = {
+  id: string;
+  name: string;
+  email: string;
+  portfolio_value: number;
+  sentiment_score: number;
+  risk_profile: string;
+  watchlist: string[];
+  created_at: string;
+};
+
+type CustomerInput = {
+  name: string;
+  email: string;
+  portfolio_value: number;
+  risk_profile: string;
+  watchlist: string[];
+};
+
 function Avatar({ name }: { name: string }) {
   const initials = name.split(" ").map((n: string) => n[0]).join("").slice(0, 2);
   return (
@@ -27,7 +46,7 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [form, setForm] = useState({ name: "", email: "", portfolio_value: "", risk_profile: "moderate", watchlist: "AAPL,NVDA" });
   const mutation = useMutation({
-    mutationFn: (data: any) => api.post("/api/customers/", data).then(r => r.data),
+    mutationFn: (data: CustomerInput) => api.post("/api/customers/", data).then(r => r.data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["customers"] }); onClose(); }
   });
 
@@ -79,7 +98,27 @@ function AddCustomerModal({ onClose }: { onClose: () => void }) {
 
 export default function Customers() {
   const [showAdd, setShowAdd] = useState(false);
-  const { data: customers, isLoading } = useQuery({ queryKey: ["customers"], queryFn: getCustomers });
+  const { data: customers, isLoading, error } = useQuery({ queryKey: ["customers"], queryFn: getCustomers });
+  const status = (error as { response?: { status?: number } })?.response?.status;
+  const isAdmin = !error;
+
+  if (error) {
+    const adminRequired = status === 401 || status === 403;
+    return (
+      <div style={{ padding: 20 }}>
+        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 40, textAlign: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+            {adminRequired ? "Admin access required" : "Unable to load customers"}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)", maxWidth: 420, margin: "0 auto" }}>
+            {adminRequired
+              ? "The customer database contains personal information (names, emails, portfolio values) and is only visible to administrators. Sign in with an admin account to view it."
+              : "The customer database could not be loaded. Please try again later."}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: 20 }}>
@@ -92,9 +131,11 @@ export default function Customers() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4, fontWeight: 600, background: "var(--green-dim)", color: "var(--green)" }}>MongoDB</span>
-            <button onClick={() => setShowAdd(true)} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", cursor: "pointer", fontWeight: 500 }}>
-              <Plus size={13} />Add Customer
-            </button>
+            {isAdmin && (
+              <button onClick={() => setShowAdd(true)} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", cursor: "pointer", fontWeight: 500 }}>
+                <Plus size={13} />Add Customer
+              </button>
+            )}
           </div>
         </div>
         <div style={{ fontFamily: "monospace", fontSize: 10, color: "var(--muted)", background: "var(--surface-2)", borderRadius: 6, padding: "6px 10px", marginBottom: 14 }}>
@@ -112,7 +153,7 @@ export default function Customers() {
               </tr>
             </thead>
             <tbody>
-              {(customers ?? []).map((c: any) => (
+              {(customers ?? []).map((c: Customer) => (
                 <tr key={c.id} style={{ borderBottom: "1px solid var(--border)" }}>
                   <td style={{ padding: "10px 8px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
