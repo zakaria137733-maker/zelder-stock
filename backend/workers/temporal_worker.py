@@ -10,8 +10,8 @@ from temporalio.client import (
 )
 from temporalio.worker import Worker
 
-from workers.temporal_activities import free_collect_activity, seed_demo_trades_activity
-from workers.temporal_workflows import FreeCollectWorkflow, SeedDemoTradesWorkflow
+from workers.temporal_activities import free_collect_activity
+from workers.temporal_workflows import FreeCollectWorkflow
 
 TASK_QUEUE = "sentimentiq"
 
@@ -40,13 +40,12 @@ async def main() -> None:
     client = await Client.connect(settings.temporal_url)
 
     await ensure_schedule(client, "collect-free-every-5min", FreeCollectWorkflow.run, TASK_QUEUE)
-    await ensure_schedule(client, "seed-demo-trades-every-5min", SeedDemoTradesWorkflow.run, TASK_QUEUE)
 
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[FreeCollectWorkflow, SeedDemoTradesWorkflow],
-        activities=[free_collect_activity, seed_demo_trades_activity],
+        workflows=[FreeCollectWorkflow],
+        activities=[free_collect_activity],
     )
     print("Worker started on task queue:", TASK_QUEUE)
     await worker.run()
