@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
         await db.customers.create_index("email", unique=True)
         await db.customers.create_index("watchlist")
         await db.customers.create_index([("sentiment_score", -1)])
-        print("ZelderStock API ready (MongoDB connected)")
+        print("SentimentIQ API ready (MongoDB connected)")
     except Exception as e:
         print(f"WARNING: MongoDB unavailable at startup, continuing: {e}")
     yield
@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="ZelderStock",
+    title="SentimentIQ",
     description="Stock market sentiment analysis platform",
     version="1.0.0",
     lifespan=lifespan,
@@ -88,7 +88,7 @@ app.include_router(auth.admin_router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "ZelderStock", "last_collect": _last_collect}
+    return {"status": "ok", "service": "SentimentIQ", "last_collect": _last_collect}
 
 
 @app.get("/api/tickers")

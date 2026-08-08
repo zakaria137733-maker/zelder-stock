@@ -67,7 +67,7 @@ export default function LoginPage() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28 }}>
           <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg, #3b82f6, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>⚡</div>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#e8e6e1" }}>ZelderStock</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#e8e6e1" }}>SentimentIQ</div>
             <div style={{ fontSize: 10, color: "#6b7280" }}>Intelligence Platform</div>
           </div>
         </div>
@@ -76,7 +76,7 @@ export default function LoginPage() {
           {mode === "login" ? "Welcome back" : mode === "register" ? "Create account" : "Admin sign in"}
         </div>
         <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 24 }}>
-          {mode === "login" ? "Sign in to your ZelderStock account"
+          {mode === "login" ? "Sign in to your SentimentIQ account"
             : mode === "register" ? "Start monitoring market sentiment"
             : "Restricted to administrators"}
         </div>
