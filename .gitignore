@@ -5,9 +5,11 @@ __pycache__/
 
 # Python model/checkpoints
 *.pt
-# The single deployed LSTM checkpoint is intentionally committed so the container
-# ships with a working model; ensemble seeds (lstm_model_<seed>.pt) stay ignored.
+# Deployed ML artifacts are intentionally committed so the container ships with a
+# working model: the single fallback checkpoint plus the 5-seed ensemble
+# (lstm_model_<seed>.pt) that the predictor actually serves.
 !backend/models/lstm_model.pt
+!backend/models/lstm_model_*.pt
 
 # Environment
 .env
