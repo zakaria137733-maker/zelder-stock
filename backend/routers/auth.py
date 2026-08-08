@@ -1,6 +1,4 @@
 import secrets
-import time
-from collections import defaultdict, deque
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -9,24 +7,20 @@ from pydantic import BaseModel
 from config import settings
 from services.auth import create_token, get_current_user, hash_password, verify_password
 from services.mongo import get_db
+from services.redis_client import rate_limit_exceeded
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Simple in-process sliding-window limiter keyed by (scope, identity).
-_attempts: dict[tuple[str, str], deque] = defaultdict(deque)
-
 
 def _check_rate_limit(scope: str, identity: str) -> None:
-    key = (scope, identity.lower())
-    now = time.monotonic()
-    window = settings.auth_rate_window_seconds
-    limit = settings.auth_rate_limit
-    dq = _attempts[key]
-    while dq and now - dq[0] > window:
-        dq.popleft()
-    if len(dq) >= limit:
+    exceeded = rate_limit_exceeded(
+        scope,
+        identity,
+        limit=settings.auth_rate_limit,
+        window=settings.auth_rate_window_seconds,
+    )
+    if exceeded:
         raise HTTPException(status_code=429, detail="Too many attempts — try again later")
-    dq.append(now)
 
 
 def _client_ip(request: Request) -> str:
