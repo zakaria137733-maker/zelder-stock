@@ -140,7 +140,47 @@ def test_deployed_artifact_scores_on_synthetic_data(monkeypatch):
     X, y = lsp.build_eval_sequences(rows, horizon=5)
     result = lsp.evaluate_deployed(X, y)
     assert result is not None, "deployed artifact must produce predictions"
-    acc, probs = result
-    assert 0.0 <= acc <= 1.0
+    metrics, probs = result
+    assert 0.0 <= metrics["accuracy"] <= 1.0
+    assert 0.0 <= metrics["balanced_accuracy"] <= 1.0
+    assert metrics["auc"] is None or 0.0 <= metrics["auc"] <= 1.0
+    assert 0.0 <= metrics["majority_baseline"] <= 1.0
     assert probs.shape == y.shape
     assert np.all((probs >= 0) & (probs <= 1))
+
+
+def test_build_sequences_matches_build_raw_features_convention():
+    # A window ends at bar i and its label is the forward return from bar i,
+    # exactly like build_eval_sequences/build_raw_features (no 1-bar offset).
+    rows = [{"ticker": "AAPL", "hour": f"2026-01-{i + 1:02d}", "price": 100.0 + i,
+             "volume": 1000.0, "sentiment": 60.0, "spy_ret": 0.1, "vix": 18.0}
+            for i in range(40)]
+    X, y = lsp.build_sequences(rows, horizon=5)
+    assert X.shape[1:] == (lsp.SEQUENCE_LEN, lsp.FEATURES)
+    assert len(X) == len(y)
+    assert (y == 1).all()  # monotonically rising prices → all windows up
+
+
+def test_build_sequences_temporal_split_is_leak_free():
+    # Windows sorted by end time; train must be strictly older than val.
+    rows = []
+    for t in range(60):
+        rows.append({"ticker": "AAPL", "hour": f"2026-01-{t + 1:02d}",
+                     "price": 100.0 + (0.5 if t % 2 == 0 else -0.5) * (t % 3),
+                     "volume": 1000.0, "sentiment": 60.0, "spy_ret": 0.0, "vix": 18.0})
+    X, y, times = lsp.build_sequences(rows, horizon=5, return_times=True)
+    order = np.argsort(np.asarray(times), kind="stable")
+    split = int(0.8 * len(order))
+    assert order[:split].max() < order[split:].min()  # preserved order → temporal
+    assert len(X) == len(times)
+    assert X.shape[1:] == (lsp.SEQUENCE_LEN, lsp.FEATURES)
+
+
+def test_classification_metrics_reports_auc_and_baseline():
+    y = np.array([1, 1, 1, 0, 0, 0, 1, 0])
+    probs = np.array([0.9, 0.8, 0.7, 0.3, 0.2, 0.1, 0.6, 0.4])
+    m = lsp.classification_metrics(y, probs)
+    assert m["n"] == 8
+    assert m["auc"] is not None and 0.0 <= m["auc"] <= 1.0
+    assert 0.0 <= m["balanced_accuracy"] <= 1.0
+    assert m["majority_baseline"] == pytest.approx(0.5)

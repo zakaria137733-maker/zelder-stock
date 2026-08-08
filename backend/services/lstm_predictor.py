@@ -15,6 +15,8 @@ SCALER_PATH = f"{MODEL_DIR}/scaler.json"
 
 SEQUENCE_LEN = 10
 FEATURES = 12
+HORIZON = 5
+LABEL_THRESHOLD = 1.0
 HIDDEN_SIZE = 32
 NUM_LAYERS = 1
 DROPOUT = 0.5
@@ -125,20 +127,20 @@ def fetch_training_data():
             sent_map = {}
             for table in query_api.query(sent_flux):
                 for record in table.records:
-                    hour = record.get_time().strftime("%Y-%m-%dT%H:00")
-                    sent_map[hour] = record.get_value()
+                    day = record.get_time().strftime("%Y-%m-%d")
+                    sent_map[day] = record.get_value()
 
             price_map = {}
             for table in query_api.query(price_flux):
                 for record in table.records:
-                    hour = record.get_time().strftime("%Y-%m-%dT%H:00")
-                    price_map[hour] = record.get_value()
+                    day = record.get_time().strftime("%Y-%m-%d")
+                    price_map[day] = record.get_value()
 
             volume_map = {}
             for table in query_api.query(volume_flux):
                 for record in table.records:
-                    hour = record.get_time().strftime("%Y-%m-%dT%H:00")
-                    volume_map[hour] = record.get_value()
+                    day = record.get_time().strftime("%Y-%m-%d")
+                    volume_map[day] = record.get_value()
 
             hours = sorted(price_map.keys())
             prices_list = [price_map[h] for h in hours]
@@ -202,8 +204,8 @@ def fetch_training_data():
         try:
             for table in query_api.query(flux):
                 for record in table.records:
-                    hour = record.get_time().strftime("%Y-%m-%dT%H:00")
-                    target[hour] = record.get_value()
+                    day = record.get_time().strftime("%Y-%m-%d")
+                    target[day] = record.get_value()
         except Exception as e:
             print(f"  {name} error: {e}")
 
@@ -236,57 +238,73 @@ def fetch_training_data():
     return all_data
 
 
-def build_sequences(data):
+def build_sequences(data, horizon=HORIZON, threshold=LABEL_THRESHOLD, return_times=False):
+    """Build training windows with the SAME convention as serving/eval.
+
+    A window covers SEQUENCE_LEN bars ending at bar `i` (inclusive), and its
+    label is the forward return from bar `i` to bar `i + horizon`, thresholded at
+    ±`threshold`% (neutral windows dropped). This matches build_raw_features() +
+    build_eval_sequences(), so train, eval, and /api/predictions all mean the
+    same thing.
+
+    When return_times=True a third element is returned: the end-bar timestamp
+    of each window, used for time-ordered (leak-free) splits.
+    """
     from collections import defaultdict
     by_ticker = defaultdict(list)
     for row in data:
         by_ticker[row["ticker"]].append(row)
 
-    X_all, y_all = [], []
+    X_all, y_all, t_all = [], [], []
 
     for _ticker, rows in by_ticker.items():
-        rows = sorted(rows, key=lambda r: r["hour"])
+        rows = sorted(rows, key=lambda r: r.get("time") or r["hour"])
         prices = [r["price"] for r in rows]
+        volumes = [r.get("volume", 0.0) for r in rows]
+        dates = [r.get("time") or r["hour"] for r in rows]
 
-        for i in range(SEQUENCE_LEN, len(rows) - 1):
-            window = []
-            for j in range(i - SEQUENCE_LEN, i):
-                r = rows[j]
-                r_prev = rows[j - 1] if j > 0 else rows[j]
-                price = r["price"]
-                prev_price = r_prev["price"]
-                price_change = (price - prev_price) / prev_price * 100 if prev_price else 0
-                eps = 1e-8
+        if len(prices) >= 28:
+            try:
+                indicators = compute_indicators(prices, volumes, dates)
+            except Exception:
+                indicators = None
+        else:
+            indicators = None
+        if indicators is None:
+            indicators = _default_indicators(len(prices))
 
-                window.append([
-                    r["sentiment"] / 100.0,
-                    price_change,
-                    r["rsi"] / 100.0,
-                    r["macd"] / (price + eps) * 100,
-                    r["bb_width"],
-                    r["adx"] / 100.0,
-                    np.log1p(abs(r["obv"])) * np.sign(r["obv"]) / 25.0,
-                    r["stoch"] / 100.0,
-                    r["williams_r"] / 100.0,
-                    r["cci"] / 200.0,
-                    r["spy_ret"],
-                    (r["vix"] - 20.0) / 10.0,
-                ])
-
-            if i + 5 >= len(prices):
-                continue
-            pct_change = (prices[i + 5] - prices[i]) / prices[i] * 100
-            if pct_change > 1.0:
+        for i in range(SEQUENCE_LEN, len(rows) - horizon):
+            cur = prices[i]
+            nxt = prices[i + horizon]
+            pct = (nxt - cur) / cur * 100 if cur else 0
+            if pct > threshold:
                 label = 1
-            elif pct_change < -1.0:
+            elif pct < -threshold:
                 label = 0
             else:
                 continue
 
+            start = i - SEQUENCE_LEN + 1
+            window = []
+            for pos, j in enumerate(range(start, i + 1)):
+                row = rows[j]
+                prev_price = rows[j - 1]["price"] if pos > 0 else row["price"]
+
+                def ind(key, default, _idx=j, _indicators=indicators):
+                    vals = _indicators.get(key, [])
+                    return vals[_idx] if _idx < len(vals) else default
+
+                window.append(_feature_row(row, prev_price, ind))
+
             X_all.append(window)
             y_all.append(label)
+            t_all.append(rows[i].get("time") or rows[i]["hour"])
 
-    return np.array(X_all, dtype=np.float32), np.array(y_all, dtype=np.float32)
+    X = np.array(X_all, dtype=np.float32) if X_all else np.empty((0, SEQUENCE_LEN, FEATURES), dtype=np.float32)
+    y = np.array(y_all, dtype=np.float32) if y_all else np.empty((0,), dtype=np.float32)
+    if return_times:
+        return X, y, t_all
+    return X, y
 
 
 def load_scaler() -> dict:
@@ -319,7 +337,43 @@ def apply_scaler(window, scaler: dict) -> np.ndarray:
     return np.clip(window, -5, 5)
 
 
-def build_raw_features(recent_data) -> np.ndarray | None:
+def _default_indicators(n: int) -> dict:
+    """Neutral indicator series used when there is too little data for real indicators."""
+    return {
+        "rsi": [50.0] * n,
+        "macd": [0.0] * n,
+        "bb_width": [0.0] * n,
+        "adx": [25.0] * n,
+        "obv": [0.0] * n,
+        "stoch": [50.0] * n,
+        "williams_r": [-50.0] * n,
+        "cci": [0.0] * n,
+    }
+
+
+def _feature_row(row, prev_price, ind, eps=1e-8) -> list:
+    """Build the 12 features for one bar. `ind` resolves a precomputed indicator
+    by key with a default. This is the SINGLE source of truth for features so
+    training (build_sequences) and serving (build_raw_features) can never drift."""
+    price = row["price"]
+    price_change = (price - prev_price) / prev_price * 100 if prev_price else 0
+    return [
+        row.get("sentiment", 50.0) / 100.0,
+        price_change,
+        ind("rsi", 50.0) / 100.0,
+        ind("macd", 0.0) / (price + eps) * 100,
+        ind("bb_width", 0.0),
+        ind("adx", 25.0) / 100.0,
+        np.log1p(abs(ind("obv", 0.0))) * np.sign(ind("obv", 0.0)) / 25.0,
+        ind("stoch", 50.0) / 100.0,
+        ind("williams_r", -50.0) / 100.0,
+        ind("cci", 0.0) / 200.0,
+        row.get("spy_ret", 0.0),
+        (row.get("vix", 20.0) - 20.0) / 10.0,
+    ]
+
+
+def build_raw_features(recent_data, indicators=None) -> np.ndarray | None:
     """Build the raw (pre-scaler) feature window for a single ticker's recent_data.
 
     Mirrors the per-step construction in build_sequences() exactly so inference
@@ -333,53 +387,27 @@ def build_raw_features(recent_data) -> np.ndarray | None:
     volumes = [r.get("volume", 0.0) for r in recent_data]
     dates = [r.get("time", "") for r in recent_data]
 
-    if len(prices) >= 28:
-        try:
-            indicators = compute_indicators(prices, volumes, dates)
-        except Exception:
-            indicators = None
-    else:
-        indicators = None
-
     if indicators is None:
-        n = len(prices)
-        indicators = {
-            "rsi": [50.0] * n, "macd": [0.0] * n,
-            "bb_width": [0.0] * n, "adx": [25.0] * n,
-            "obv": [0.0] * n, "stoch": [50.0] * n,
-            "williams_r": [-50.0] * n, "cci": [0.0] * n,
-        }
+        if len(prices) >= 28:
+            try:
+                indicators = compute_indicators(prices, volumes, dates)
+            except Exception:
+                indicators = None
+        if indicators is None:
+            indicators = _default_indicators(len(prices))
 
-    window = []
     rows = recent_data[-SEQUENCE_LEN:]
     offset = len(recent_data) - SEQUENCE_LEN
-    eps = 1e-8
-
+    window = []
     for i, row in enumerate(rows):
         idx = offset + i
-        price = row["price"]
-        prev_price = recent_data[offset + i - 1]["price"] if i > 0 else price
-        price_change = (price - prev_price) / prev_price * 100 if prev_price else 0
+        prev_price = recent_data[offset + i - 1]["price"] if i > 0 else row["price"]
 
         def ind(key, default, _idx=idx):
             vals = indicators.get(key, [])
             return vals[_idx] if _idx < len(vals) else default
 
-        features = [
-            row.get("sentiment", 50.0) / 100.0,
-            price_change,
-            ind("rsi", 50.0) / 100.0,
-            ind("macd", 0.0) / (price + eps) * 100,
-            ind("bb_width", 0.0),
-            ind("adx", 25.0) / 100.0,
-            np.log1p(abs(ind("obv", 0.0))) * np.sign(ind("obv", 0.0)) / 25.0,
-            ind("stoch", 50.0) / 100.0,
-            ind("williams_r", -50.0) / 100.0,
-            ind("cci", 0.0) / 200.0,
-            row.get("spy_ret", 0.0),
-            (row.get("vix", 20.0) - 20.0) / 10.0,
-        ]
-        window.append(features)
+        window.append(_feature_row(row, prev_price, ind))
 
     return np.array(window, dtype=np.float32)
 
@@ -398,9 +426,10 @@ def fetch_live_daily_context(ticker: str, days: int = 90) -> list[dict]:
     """Build recent_data at DAILY granularity to match fetch_training_data().
 
     Training reads daily bars from prices_daily and daily market_index series.
-    Live inference must use the same granularity (10 daily steps, not 10 hourly).
+    Live inference must use the same granularity (10 daily steps).
     Daily closes come from prices_daily overlaid with fresh daily aggregates of
-    the hourly `prices` measurement; market context (spy_ret/vix) comes from the
+    Daily closes come from prices_daily overlaid with fresh daily aggregates of
+    the `prices` measurement; market context (spy_ret/vix) comes from the
     real market_index series instead of hardcoded defaults.
     """
     from influxdb_client import InfluxDBClient
@@ -495,12 +524,13 @@ def ensemble_forward(X_scaled: np.ndarray) -> np.ndarray | None:
     return probs / len(models)
 
 
-def build_eval_sequences(rows, horizon=5):
+def build_eval_sequences(rows, horizon=HORIZON, threshold=LABEL_THRESHOLD):
     """Build (X_raw, y) windows from daily rows for evaluating the deployed artifact.
 
-    Uses the exact training-time label convention from build_sequences(): forward
-    return over `horizon` bars, >+1% up, <-1% down, neutral skipped. Each window is
-    built with build_raw_features() (the same path used by /api/predictions), so the
+    Uses the exact label convention from build_sequences(): the window ends at
+    bar `i` and the label is the forward return from bar `i` over `horizon` bars,
+    thresholded at ±`threshold`% (neutral skipped). Each window is built with
+    build_raw_features() (the same path used by /api/predictions), so the
     evaluation measures the shipped model on the same inputs it serves.
     """
     X_raw, y = [], []
@@ -511,9 +541,9 @@ def build_eval_sequences(rows, horizon=5):
         cur = rows[i]["price"]
         nxt = rows[i + horizon]["price"]
         pct = (nxt - cur) / cur * 100 if cur else 0
-        if pct > 1.0:
+        if pct > threshold:
             label = 1
-        elif pct < -1.0:
+        elif pct < -threshold:
             label = 0
         else:
             continue
@@ -524,20 +554,42 @@ def build_eval_sequences(rows, horizon=5):
     return np.array(X_raw, dtype=np.float32), np.array(y, dtype=np.float32)
 
 
+def classification_metrics(y_true, prob_up):
+    """Reliable summary metrics on a (possibly imbalanced) fold.
+
+    Raw accuracy alone is misleading on imbalanced data, so we also report
+    balanced accuracy, ROC-AUC, and the majority-class baseline to compare
+    against.
+    """
+    from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+
+    y = np.asarray(y_true).astype(float)
+    p = np.asarray(prob_up).astype(float)
+    preds = (p > 0.5).astype(float)
+    baseline = max(float(y.mean()), 1.0 - float(y.mean()))
+    return {
+        "n": int(len(y)),
+        "up_share": round(float(y.mean()), 4),
+        "accuracy": round(float((preds == y).mean()), 4),
+        "balanced_accuracy": round(float(balanced_accuracy_score(y, preds)), 4),
+        "auc": round(float(roc_auc_score(y, p)), 4) if len(np.unique(y)) > 1 else None,
+        "majority_baseline": round(baseline, 4),
+    }
+
+
 def evaluate_deployed(X_raw_val, y_val):
     """Evaluate the ACTUAL deployed artifact (5-seed ensemble + scaler.json).
 
     Uses the exact serving pipeline: raw features -> scaler -> ensemble forward,
-    the same code path behind /api/predictions. Returns (accuracy, probs) or None
-    if no trained model exists.
+    the same code path behind /api/predictions. Returns (metrics_dict, probs) or
+    None if no trained model exists.
     """
     scaler = load_scaler()
     X_scaled = apply_scaler(np.asarray(X_raw_val, dtype=np.float32), scaler)
     probs = ensemble_forward(X_scaled)
     if probs is None:
         return None
-    preds = (probs > 0.5).astype(float)
-    return accuracy_score(np.asarray(y_val).astype(float), preds), probs
+    return classification_metrics(y_val, probs), probs
 
 
 def train():
@@ -547,23 +599,27 @@ def train():
     os.makedirs(MODEL_DIR, exist_ok=True)
     print("Fetching training data from InfluxDB...")
     data = fetch_training_data()
-    print(f"Got {len(data)} hourly data points")
+    print(f"Got {len(data)} daily data points")
 
     if len(data) < SEQUENCE_LEN + 2:
         print("Not enough data.")
         return None
 
-    X, y = build_sequences(data)
+    X, y, times = build_sequences(data, return_times=True)
     print(f"Built {len(X)} training sequences")
+    if len(X) == 0:
+        print("No labeled windows — prices did not move beyond the threshold.")
+        return None
     print(f"Class balance: {y.mean():.1%} up, {1-y.mean():.1%} down")
 
-
+    order = np.argsort(np.asarray(times), kind="stable")
+    X, y = X[order], y[order]
     split = int(0.8 * len(X))
     X_train_raw = X[:split]
     y_train_raw = y[:split]
     X_val_raw = X[split:]
     y_val_raw = y[split:]
-
+    print(f"Temporal split (train oldest / val newest): {len(X_train_raw)} / {len(X_val_raw)} windows")
 
     up_idx = np.where(y_train_raw == 1)[0]
     down_idx = np.where(y_train_raw == 0)[0]
@@ -575,7 +631,6 @@ def train():
     X_train_raw = X_train_raw[balanced_idx]
     y_train_raw = y_train_raw[balanced_idx]
     print(f"Balanced train: {len(X_train_raw)} | Val: {len(X_val_raw)}")
-
 
     X_train_clipped = np.clip(X_train_raw, -5, 5)
     X_val_clipped = np.clip(X_val_raw, -5, 5)
@@ -600,7 +655,7 @@ def train():
     print("Training LSTM...")
     best_acc = 0
     best_state = None
-    patience = 30
+    patience = 15
     no_improve = 0
 
     for epoch in range(EPOCHS):
@@ -618,33 +673,42 @@ def train():
             total_loss += loss.item()
         scheduler.step()
 
+        model.eval()
+        with torch.no_grad():
+            val_prob = model(X_val).view(-1)
+            val_pred = (val_prob > 0.5).float()
+            val_acc = accuracy_score(y_val.numpy(), val_pred.numpy())
+
+        if val_acc > best_acc:
+            best_acc = val_acc
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print(f"  Early stopping at epoch {epoch+1}")
+                break
+
         if (epoch + 1) % 20 == 0:
-            model.eval()
             with torch.no_grad():
                 train_pred = (model(X_train).view(-1) > 0.5).float()
                 train_acc = accuracy_score(y_train.numpy(), train_pred.numpy())
-                val_pred = (model(X_val).view(-1) > 0.5).float()
-                val_acc = accuracy_score(y_val.numpy(), val_pred.numpy())
-
-                if val_acc > best_acc:
-                    best_acc = val_acc
-                    best_state = {k: v.clone() for k, v in model.state_dict().items()}
-                    no_improve = 0
-                else:
-                    no_improve += 1
-                    if no_improve >= patience:
-                        print(f"  Early stopping at epoch {epoch+1}")
-                        break
-
-                print(f"  Epoch {epoch+1}/{EPOCHS} — loss: {total_loss/len(loader):.4f} — train: {train_acc:.1%} — val: {val_acc:.1%}")
+            print(f"  Epoch {epoch+1}/{EPOCHS} — loss: {total_loss/len(loader):.4f} — train: {train_acc:.1%} — val: {val_acc:.1%}")
 
     if best_state:
         model.load_state_dict(best_state)
 
     torch.save(model.state_dict(), MODEL_PATH)
     print(f"Model saved → {MODEL_PATH}")
-    print(f"Best validation accuracy: {best_acc:.1%}")
-    return model, best_acc
+
+    model.eval()
+    with torch.no_grad():
+        best_probs = model(X_val).view(-1).numpy()
+    metrics = classification_metrics(y_val.numpy(), best_probs)
+    print(f"Validation (newest {len(y_val)} windows):")
+    print(f"  accuracy={metrics['accuracy']:.1%} balanced={metrics['balanced_accuracy']:.1%} "
+          f"auc={metrics['auc'] if metrics['auc'] is not None else 'N/A'} baseline={metrics['majority_baseline']:.1%}")
+    return model, metrics
 
 
 def predict(ticker, recent_data):
@@ -656,12 +720,12 @@ def predict(ticker, recent_data):
     model.eval()
 
     if len(recent_data) < SEQUENCE_LEN:
-        return {"error": f"Need {SEQUENCE_LEN} hours of data", "signal": "unknown"}
+        return {"error": f"Need {SEQUENCE_LEN} days of data", "signal": "unknown"}
 
     scaler = load_scaler()
     window = build_raw_features(recent_data)
     if window is None:
-        return {"error": f"Need {SEQUENCE_LEN} hours of data", "signal": "unknown"}
+        return {"error": f"Need {SEQUENCE_LEN} days of data", "signal": "unknown"}
     X = torch.tensor(apply_scaler(window, scaler)[None], dtype=torch.float32)
 
     with torch.no_grad():

@@ -50,10 +50,12 @@ def run(ticker: str, days: int, horizon: int, json_out: str) -> int:
         "windows": int(len(y)),
         "up_samples": int(y.sum()),
         "down_samples": int(len(y) - y.sum()),
-        "accuracy": round(acc, 4),
+        "accuracy": acc["accuracy"],
+        "balanced_accuracy": acc["balanced_accuracy"],
+        "auc": acc["auc"],
         "accuracy_up": round(up_acc, 4) if up_acc is not None else None,
         "accuracy_down": round(down_acc, 4) if down_acc is not None else None,
-        "baseline": round(max(y.mean(), 1 - y.mean()), 4),
+        "baseline": acc["majority_baseline"],
     }
 
     print("\n" + "=" * 46)
@@ -62,6 +64,8 @@ def run(ticker: str, days: int, horizon: int, json_out: str) -> int:
     for key, value in report.items():
         print(f"  {key:14} {value}")
     print("=" * 46)
+    print("  Read the number as: does the shipped model beat its own")
+    print("  majority baseline on recent held-out data?")
 
     if json_out:
         os.makedirs(os.path.dirname(json_out) or ".", exist_ok=True)
