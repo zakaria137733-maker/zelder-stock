@@ -3,6 +3,23 @@
 Real-time stock sentiment analysis with a machine-learning price-direction signal,
 served through a FastAPI backend and a Next.js dashboard.
 
+## What this repo demonstrates
+
+- **Leak-free evaluation.** The walk-forward harness (`scripts/eval_walkforward.py`)
+  evaluates predictors strictly time-ordered — training only on past windows —
+  against coin-flip, majority-up and momentum baselines, so reported accuracy
+  isn't contaminated by lookahead.
+- **Serving parity.** `/api/predictions` runs the exact raw-features → scaler →
+  ensemble forward pass that the evaluation scripts measure, and
+  `scripts/eval_deployed.py` scores the committed artifact itself.
+- **Security hardening.** No secrets in the tree (generated demo credentials, admin
+  passwords never logged), per-user IDOR scoping, ticker allowlists, and
+  Redis-backed auth rate limiting with an in-process fallback.
+- **CI.** GitHub Actions runs ruff + pytest (with Mongo/Influx/Redis containers),
+  `tsc --noEmit`, eslint and vitest on every push/PR.
+
+Honest caveats about signal quality are in the ML section below.
+
 ## Architecture
 
 ```
@@ -24,8 +41,8 @@ served through a FastAPI backend and a Next.js dashboard.
    ┌──────────────────────────────────────────┐      ┌──────────────────┐
    │              FastAPI (api)               │      │  Temporal worker │
    │  /api/auth  /api/customers  /api/sentiment│◄────►│  scheduled jobs  │
-   │  /api/prices  /api/predictions  /api/admin│      │  (Google News +  │
-   └──────────────────┬───────────────────────┘      │   demo trades)   │
+   │  /api/prices  /api/predictions  /api/admin│      │  (Google News)   │
+   └──────────────────┬───────────────────────┘      │                  │
                       ▼                              └──────────────────┘
             Next.js dashboard (frontend)
 ```
@@ -150,9 +167,10 @@ docker-compose exec api python scripts/eval_deployed.py AAPL --days 120 --json-o
 ```
 
 The `test_deployed_artifact_scores_on_synthetic_data` pytest also loads the
-committed `lstm_model.pt` + `scaler.json` and asserts the serving pipeline
-produces sane probabilities — so the shipped artifact is under test, not just
-some freshly-trained twin.
+committed 5-seed ensemble (`lstm_model_42.pt` … `lstm_model_2024.pt`) plus the
+single `lstm_model.pt` fallback and `scaler.json` and asserts the serving
+pipeline produces sane probabilities — so the shipped artifact is under test,
+not just some freshly-trained twin.
 
 **Walk-forward harness.** `scripts/eval_walkforward.py` (offline by default,
 `--ticker` for real data, `--thresholds` for a label-threshold sweep) evaluates any
