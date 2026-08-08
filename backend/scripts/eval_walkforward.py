@@ -26,7 +26,8 @@ def load_prices(args):
         if len(rows) < 30:
             print(f"Not enough daily rows for {args.ticker} ({len(rows)}).")
             sys.exit(1)
-        return [r["price"] for r in rows], f"{args.ticker} - InfluxDB ({len(rows)} daily bars)"
+        prices = [r["price"] for r in rows]
+        return prices, f"{args.ticker} - InfluxDB ({len(rows)} daily bars)", rows
     if args.input:
         with open(args.input) as f:
             data = json.load(f)
@@ -37,9 +38,13 @@ def load_prices(args):
         if not prices or len(prices) < 30:
             print(f"No usable prices in {args.input}.")
             sys.exit(1)
-        return prices, f"{args.input} ({len(prices)} bars)"
+        rows = data.get("rows") if isinstance(data, dict) else None
+        if rows is not None and len(rows) != len(prices):
+            print("rows and prices must be the same length; ignoring rows.")
+            rows = None
+        return prices, f"{args.input} ({len(prices)} bars)", rows
     prices = wf.synthetic_prices(seed=args.seed)
-    return prices, f"synthetic random walk - seed={args.seed} (offline)"
+    return prices, f"synthetic random walk - seed={args.seed} (offline)", None
 
 
 def main() -> int:
@@ -55,16 +60,17 @@ def main() -> int:
     parser.add_argument("--thresholds", default="",
                         help="comma list, e.g. '0.5,1.0,1.5,2.0' to sweep the label threshold")
     parser.add_argument("--models", default="",
-                        help="comma list to restrict methods, e.g. 'logistic,xgboost'")
+                        help="comma list to restrict methods, e.g. 'logistic,xgboost,lstm' "
+                             "(lstm is only available with --ticker/--input rows)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--json-out", default="")
     args = parser.parse_args()
 
-    prices, source = load_prices(args)
+    prices, source, rows = load_prices(args)
     models = [m.strip() for m in args.models.split(",") if m.strip()] or None
     thresholds = [float(t.strip()) for t in args.thresholds.split(",") if t.strip()] or [args.threshold]
 
-    rows = []
+    rows_out = []
     for thresh in thresholds:
         result = wf.evaluate(
             prices,
@@ -73,18 +79,19 @@ def main() -> int:
             threshold_pct=thresh,
             momentum_window=args.momentum_window,
             models=models,
+            rows=rows,
         )
         if result is None:
             print(f"Not enough labelled windows at threshold {thresh:g}%.")
             continue
-        rows.append((thresh, result))
+        rows_out.append((thresh, result))
 
-    if not rows:
+    if not rows_out:
         return 1
 
     print(f"Source: {source}")
-    if len(rows) == 1:
-        thresh, result = rows[0]
+    if len(rows_out) == 1:
+        thresh, result = rows_out[0]
         print(f"Label: {args.horizon}-day forward move +/-{thresh:g}% - windows: {result['n_windows_total']} - "
               f"folds: {result['n_folds_run']}\n")
         print(f"{'method':<16}{'fold accs':<42}{'mean':>7}")
@@ -94,11 +101,11 @@ def main() -> int:
             print(f"{name:<16}{fold_accs:<42}{mean_acc:>7.1%}")
         print(f"{'coin flip (ref)':<16}{'':<42}{0.5:>7.1%}")
     else:
-        names = list(rows[0][1]["overall"].keys())
+        names = list(rows_out[0][1]["overall"].keys())
         print(f"Label: {args.horizon}-day forward move beyond threshold - windows/fold vary by threshold\n")
         print(f"{'threshold':<12}{'windows':>8}" + "".join(f"{n:>12}" for n in names) + f"{'coin(0.5)':>12}")
         print("-" * (12 + 8 + 12 * len(names) + 12))
-        for thresh, result in rows:
+        for thresh, result in rows_out:
             line = f"{thresh:g}%".ljust(12) + f"{result['n_windows_total']:>8}"
             for name in names:
                 line += f"{result['overall'][name]:>12.1%}"
@@ -111,7 +118,7 @@ def main() -> int:
             "source": source,
             "params": vars(args),
             "results": [
-                {"threshold_pct": thresh, **result} for thresh, result in rows
+                {"threshold_pct": thresh, **result} for thresh, result in rows_out
             ],
         }
         with open(args.json_out, "w") as f:

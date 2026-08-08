@@ -140,6 +140,90 @@ def _mlp(prices, train_idxs, train_ys, test_idxs, lookback=(1, 5, 10)):
     return clf.predict(_trailing_features(prices, test_idxs, lookback))
 
 
+def _lstm_factory(rows, epochs=60, patience=8, seed=42):
+    """Causal LSTM method for the walk-forward harness.
+
+    `rows` must be the same length as `prices` (index-aligned daily dicts with
+    price/volume/time/sentiment/spy_ret/vix — see fetch_live_daily_context).
+    Each fold trains a fresh SentimentLSTM on the training windows (which only
+    see data up to their own final bar) and predicts the test windows. Uses the
+    same feature/label conventions as services.lstm_predictor, so the resulting
+    number is directly comparable to the other methods in this harness.
+    """
+    def _lstm(prices, train_idxs, train_ys, test_idxs):
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import DataLoader, TensorDataset
+
+        from services.lstm_predictor import SentimentLSTM, build_raw_features
+
+        def build(idxs, ys):
+            Xw, yw = [], []
+            for i, yv in zip(idxs, ys, strict=True):
+                i = int(i)
+                w = build_raw_features(rows[: i + 1])
+                if w is None:
+                    continue
+                Xw.append(w)
+                yw.append(yv)
+            if not Xw:
+                return None, None
+            return np.array(Xw, dtype=np.float32), np.array(yw, dtype=float)
+
+        X_tr, y_tr = build(train_idxs, train_ys)
+        if X_tr is None or len(y_tr) < 20 or len(np.unique(y_tr)) < 2:
+            return np.full(len(test_idxs), float(np.mean(train_ys) >= 0.5))
+
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+        split = int(0.8 * len(y_tr))
+        X_tt = torch.tensor(np.clip(X_tr[:split], -5, 5), dtype=torch.float32)
+        y_tt = torch.tensor(y_tr[:split], dtype=torch.float32)
+        X_tv = torch.tensor(np.clip(X_tr[split:], -5, 5), dtype=torch.float32)
+        y_tv = torch.tensor(y_tr[split:], dtype=torch.float32)
+
+        loader = DataLoader(TensorDataset(X_tt, y_tt), batch_size=64, shuffle=True)
+        model = SentimentLSTM()
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+        criterion = nn.BCELoss()
+
+        best_acc = 0
+        best_state = None
+        no_improve = 0
+        for _epoch in range(epochs):
+            model.train()
+            for xb, yb in loader:
+                optimizer.zero_grad()
+                loss = criterion(model(xb).view(-1), yb)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+                optimizer.step()
+            model.eval()
+            with torch.no_grad():
+                acc = float(((model(X_tv).view(-1) > 0.5).float() == y_tv).float().mean())
+            if acc > best_acc:
+                best_acc = acc
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= patience:
+                    break
+        if best_state:
+            model.load_state_dict(best_state)
+
+        X_te, _ = build(test_idxs, np.zeros(len(test_idxs)))
+        if X_te is None:
+            return np.full(len(test_idxs), float(np.mean(train_ys) >= 0.5))
+        model.eval()
+        with torch.no_grad():
+            probs = model(torch.tensor(np.clip(X_te, -5, 5), dtype=torch.float32)).view(-1).numpy()
+        return (probs > 0.5).astype(float)
+
+    return _lstm
+
+
 def evaluate(
     prices,
     n_folds=5,
@@ -149,13 +233,16 @@ def evaluate(
     momentum_window=5,
     min_train_windows=20,
     models=None,
+    rows=None,
 ):
     """Expanding-window walk-forward evaluation.
 
     Folds are contiguous time slices over the binary-labelled windows. Fold 0 is
     only used for training; folds 1..n_folds-1 are each tested once, training on
     all windows before the fold. `models` optionally restricts the methods
-    (default: all available). Returns a summary dict, or None if there is not
+    (default: all available). `rows` optionally provides the daily feature rows
+    (index-aligned with `prices`) so the LSTM method is trained/evaluated in the
+    same causal framework. Returns a summary dict, or None if there is not
     enough data.
     """
     labels = binary_labels(prices, horizon, threshold_pct, start)
@@ -172,6 +259,8 @@ def evaluate(
     if _xgboost_available():
         methods["xgboost"] = _xgboost
     methods["mlp"] = _mlp
+    if rows is not None:
+        methods["lstm"] = _lstm_factory(rows)
     if models:
         methods = {k: v for k, v in methods.items() if k in models}
 
