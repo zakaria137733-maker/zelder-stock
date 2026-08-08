@@ -62,7 +62,9 @@ def train_window(X_train, y_train, seed=42):
 def run():
     print("Fetching data...")
     data = fetch_training_data()
-    X, y = build_sequences(data)
+    X, y, times = build_sequences(data, return_times=True)
+    order = np.argsort(np.asarray(times), kind="stable")
+    X, y = X[order], y[order]
     print(f"Total sequences: {len(X)}")
 
     window_size = len(X) // (N_WINDOWS + 1)

@@ -6,10 +6,10 @@ import type { Prediction } from "@/lib/types";
 const getPredictions = () => api.get("/api/predictions/").then(r => r.data);
 
 const signalColor = (signal: string) =>
-  signal === "BUY" ? "var(--green)" : signal === "SELL" ? "var(--red)" : "var(--amber)";
+  signal === "BUY" ? "var(--green)" : signal === "SELL" ? "var(--red)" : signal === "NO_SIGNAL" ? "var(--muted)" : "var(--amber)";
 
 const signalBg = (signal: string) =>
-  signal === "BUY" ? "var(--green-dim)" : signal === "SELL" ? "var(--red-dim)" : "var(--amber-dim)";
+  signal === "BUY" ? "var(--green-dim)" : signal === "SELL" ? "var(--red-dim)" : signal === "NO_SIGNAL" ? "var(--surface-2)" : "var(--amber-dim)";
 
 export default function Predictions() {
   const { data: predictions, isLoading } = useQuery({
@@ -30,7 +30,11 @@ export default function Predictions() {
       </div>
 
       <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 12, padding: "6px 10px", background: "var(--surface-2)", borderRadius: 6 }}>
-        Predicts next-day price direction from a 10-day sentiment + price window
+        Predicts 5-day forward price direction from a 10-day sentiment + price window
+      </div>
+
+      <div style={{ fontSize: 9, color: "var(--muted)", marginBottom: 12 }}>
+        NO_SIGNAL means walk-forward tests found no edge over momentum (McNemar p ≥ 0.05); prob_up is still shown for transparency.
       </div>
 
       {isLoading ? (

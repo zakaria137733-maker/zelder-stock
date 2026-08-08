@@ -59,7 +59,9 @@ def train_and_eval(X_train, y_train, X_val, y_val, seed):
 def run():
     print("Fetching data...")
     data = fetch_training_data()
-    X, y = build_sequences(data)
+    X, y, times = build_sequences(data, return_times=True)
+    order = np.argsort(np.asarray(times), kind="stable")
+    X, y = X[order], y[order]
 
     split = int(0.8 * len(X))
     X_train, X_val = X[:split], X[split:]

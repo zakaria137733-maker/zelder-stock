@@ -3,9 +3,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import datetime, timezone, timedelta
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-from config import settings
+from services.influx import get_influx_client
 
 TRAJECTORIES = {
     "AAPL": [68, 70, 71, 69, 68, 65, 60, 55, 48, 44, 42, 43],
@@ -18,7 +18,7 @@ TRAJECTORIES = {
 }
 
 def seed():
-    client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+    client = get_influx_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
     now = datetime.now(timezone.utc)
     points = []
@@ -32,7 +32,7 @@ def seed():
             p = (
                 Point("sentiment")
                 .tag("ticker", ticker)
-                .tag("source", "finbert")
+                .tag("source", "demo")
                 .field("composite", float(score))
                 .field("score", float((score - 50) / 50))
                 .field("signal_count", float(15))

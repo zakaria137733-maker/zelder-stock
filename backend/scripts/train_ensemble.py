@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import sys
@@ -8,19 +9,24 @@ import torch
 import torch.nn as nn
 from services.lstm_predictor import (
     EPOCHS,
+    GRAD_CLIP,
+    HORIZON,
+    LABEL_THRESHOLD,
     LR,
     SCALER_PATH,
     SEQUENCE_LEN,
+    WEIGHT_DECAY,
     SentimentLSTM,
     apply_scaler,
     build_sequences,
     classification_metrics,
     fetch_training_data,
+    fit_scaler,
 )
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
 
-MODEL_DIR = "/app/models"
+MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
 SEEDS = [42, 123, 7, 99, 2024]
 
 
@@ -32,7 +38,7 @@ def train_single(seed, X_train, y_train, X_val, y_val):
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
     model = SentimentLSTM()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.7)
     criterion = nn.BCELoss()
 
@@ -48,7 +54,7 @@ def train_single(seed, X_train, y_train, X_val, y_val):
             pred = model(X_batch).view(-1)
             loss = criterion(pred, y_batch)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             optimizer.step()
         scheduler.step()
 
@@ -70,13 +76,13 @@ def train_single(seed, X_train, y_train, X_val, y_val):
     return model, best_acc
 
 
-def train_ensemble():
+def train_ensemble(horizon=HORIZON, threshold=LABEL_THRESHOLD):
     os.makedirs(MODEL_DIR, exist_ok=True)
     np.random.seed(42)
     torch.manual_seed(42)
-    print("Fetching training data...")
+    print(f"Fetching training data (horizon={horizon}d, label ±{threshold:g}%)...")
     data = fetch_training_data()
-    X, y, times = build_sequences(data, return_times=True)
+    X, y, times = build_sequences(data, horizon=horizon, threshold=threshold, return_times=True)
     if len(X) == 0:
         print("No labeled windows — nothing to train on.")
         return None
@@ -99,22 +105,15 @@ def train_ensemble():
     X_train, y_train = X_train[idx], y_train[idx]
     print(f"Balanced train: {len(X_train)} | Val: {len(X_val)}")
 
-    n_samples, seq_len, n_features = X_train.shape
-    X_flat = X_train.reshape(-1, n_features)
-    scaler_params = {}
-    for f in range(n_features):
-        min_val = float(X_flat[:, f].min())
-        max_val = float(X_flat[:, f].max())
-        rng = max_val - min_val if max_val != min_val else 1.0
-        X_flat[:, f] = (X_flat[:, f] - min_val) / rng
-        scaler_params[f] = {"min": min_val, "range": rng}
-    X_train = X_flat.reshape(n_samples, seq_len, n_features)
+    scaler_params = fit_scaler(X_train)
+    X_train_scaled = apply_scaler(X_train, scaler_params)
     X_val_scaled = apply_scaler(X_val, scaler_params)
 
     with open(SCALER_PATH, "w") as f:
         json.dump(scaler_params, f)
+    print(f"Scaler written → {SCALER_PATH} (per-feature min/max fitted on train fold)")
 
-    X_train_t = torch.tensor(X_train, dtype=torch.float32)
+    X_train_t = torch.tensor(X_train_scaled, dtype=torch.float32)
     y_train_t = torch.tensor(y_train, dtype=torch.float32)
     X_val_t = torch.tensor(X_val_scaled, dtype=torch.float32)
     y_val_t = torch.tensor(y_val, dtype=torch.float32)
@@ -131,7 +130,7 @@ def train_ensemble():
     preds = []
     for seed in SEEDS:
         m = SentimentLSTM()
-        m.load_state_dict(torch.load(f"{MODEL_DIR}/lstm_model_{seed}.pt", map_location="cpu"))
+        m.load_state_dict(torch.load(f"{MODEL_DIR}/lstm_model_{seed}.pt", map_location="cpu", weights_only=True))
         m.eval()
         with torch.no_grad():
             preds.append(m(X_val_t).view(-1).numpy())
@@ -147,4 +146,10 @@ def train_ensemble():
 
 
 if __name__ == "__main__":
-    train_ensemble()
+    parser = argparse.ArgumentParser(description="Train the 5-seed LSTM ensemble")
+    parser.add_argument("--horizon", type=int, default=HORIZON,
+                        help=f"forward-return horizon in bars (default {HORIZON})")
+    parser.add_argument("--threshold", type=float, default=LABEL_THRESHOLD,
+                        help=f"label move threshold in %% (default {LABEL_THRESHOLD:g})")
+    args = parser.parse_args()
+    train_ensemble(horizon=args.horizon, threshold=args.threshold)

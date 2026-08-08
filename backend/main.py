@@ -1,17 +1,18 @@
 import asyncio
 import os
 import random
+import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 from config import settings
 from routers import alerts, auth, customers, predictions, prices, sentiment, signals, transactions
-from services import mongo
+from services import influx, mongo
 from services.auth import hash_password, require_admin
 from tickers import TICKERS
 
@@ -21,20 +22,12 @@ _last_collect = {"time": None, "status": "idle"}
 def _run_lightweight_collect():
     try:
         _last_collect["status"] = "running"
-        from routers.signals import _fetch_google_news, cache_set
-        from services import influx as influx_svc
-        from services.sentiment import compute_composite
+        from services.news_collector import collect_google_sentiment
 
         for ticker in TICKERS:
             try:
-                signals = _fetch_google_news(ticker)
-                if signals:
-                    cache_set(f"signals:{ticker}", signals, ttl=3600)
-                    composite = compute_composite(signals)
-                    avg_score = sum(s["score"] for s in signals) / len(signals)
-                    influx_svc.write_sentiment(ticker, avg_score, composite, "google_news", len(signals))
-                    cache_set(f"composite:{ticker}", {"score": composite, "signal_count": len(signals)}, ttl=3600)
-                    print(f"  {ticker}: {composite:.1f} ({len(signals)} signals)")
+                result = collect_google_sentiment(ticker)
+                print(f"  {ticker}: {result['composite']:.1f} ({result['signal_count']} signals)")
             except Exception as e:
                 print(f"  {ticker} error: {e}")
 
@@ -100,7 +93,7 @@ async def health():
 
 @app.get("/api/tickers")
 async def list_tickers():
-    return ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
+    return TICKERS
 
 
 @app.post("/api/admin/collect")
@@ -119,29 +112,32 @@ async def seed_all(_admin=Depends(require_admin)):
     errors = []
     customer_count = 0
     influx_count = 0
+    demo_credentials = []
 
     try:
         db = mongo.get_db()
 
         CUSTOMERS = [
-            {"name": "Sarah Chen", "email": "sarah.chen@example.com", "portfolio_value": 142800, "watchlist": ["AAPL", "NVDA"], "risk_profile": "conservative", "sentiment_score": 87, "password": "demo123"},
-            {"name": "Marcus Webb", "email": "marcus.webb@example.com", "portfolio_value": 58200, "watchlist": ["TSLA", "AAPL"], "risk_profile": "aggressive", "sentiment_score": 72, "password": "demo123"},
-            {"name": "Priya Nair", "email": "priya.nair@example.com", "portfolio_value": 214500, "watchlist": ["NVDA", "MSFT", "GOOGL"], "risk_profile": "moderate", "sentiment_score": 91, "password": "demo123"},
-            {"name": "James O'Brien", "email": "james.obrien@example.com", "portfolio_value": 31000, "watchlist": ["TSLA"], "risk_profile": "aggressive", "sentiment_score": 38, "password": "demo123"},
-            {"name": "Yuki Tanaka", "email": "yuki.tanaka@example.com", "portfolio_value": 98700, "watchlist": ["AAPL", "AMZN", "META"], "risk_profile": "moderate", "sentiment_score": 65, "password": "demo123"},
-            {"name": "Alex Rivera", "email": "alex.rivera@example.com", "portfolio_value": 175300, "watchlist": ["NVDA", "MSFT"], "risk_profile": "conservative", "sentiment_score": 79, "password": "demo123"},
-            {"name": "Dana Kim", "email": "dana.kim@example.com", "portfolio_value": 22400, "watchlist": ["TSLA", "AMZN"], "risk_profile": "aggressive", "sentiment_score": 44, "password": "demo123"},
-            {"name": "Omar Hassan", "email": "omar.hassan@example.com", "portfolio_value": 310000, "watchlist": ["AAPL", "MSFT", "GOOGL", "NVDA"], "risk_profile": "conservative", "sentiment_score": 83, "password": "demo123"},
+            {"name": "Sarah Chen", "email": "sarah.chen@example.com", "portfolio_value": 142800, "watchlist": ["AAPL", "NVDA"], "risk_profile": "conservative", "sentiment_score": 87},
+            {"name": "Marcus Webb", "email": "marcus.webb@example.com", "portfolio_value": 58200, "watchlist": ["TSLA", "AAPL"], "risk_profile": "aggressive", "sentiment_score": 72},
+            {"name": "Priya Nair", "email": "priya.nair@example.com", "portfolio_value": 214500, "watchlist": ["NVDA", "MSFT", "GOOGL"], "risk_profile": "moderate", "sentiment_score": 91},
+            {"name": "James O'Brien", "email": "james.obrien@example.com", "portfolio_value": 31000, "watchlist": ["TSLA"], "risk_profile": "aggressive", "sentiment_score": 38},
+            {"name": "Yuki Tanaka", "email": "yuki.tanaka@example.com", "portfolio_value": 98700, "watchlist": ["AAPL", "AMZN", "META"], "risk_profile": "moderate", "sentiment_score": 65},
+            {"name": "Alex Rivera", "email": "alex.rivera@example.com", "portfolio_value": 175300, "watchlist": ["NVDA", "MSFT"], "risk_profile": "conservative", "sentiment_score": 79},
+            {"name": "Dana Kim", "email": "dana.kim@example.com", "portfolio_value": 22400, "watchlist": ["TSLA", "AMZN"], "risk_profile": "aggressive", "sentiment_score": 44},
+            {"name": "Omar Hassan", "email": "omar.hassan@example.com", "portfolio_value": 310000, "watchlist": ["AAPL", "MSFT", "GOOGL", "NVDA"], "risk_profile": "conservative", "sentiment_score": 83},
         ]
 
         await db.customers.drop()
         await db.customers.create_index("email", unique=True)
         docs = []
         for c in CUSTOMERS:
-            doc = {k: v for k, v in c.items() if k != "password"}
-            doc["password_hash"] = hash_password(c["password"])
+            password = secrets.token_urlsafe(12)
+            doc = dict(c)
+            doc["password_hash"] = hash_password(password)
             doc["created_at"] = datetime.now(UTC) - timedelta(days=random.randint(30, 365))
             docs.append(doc)
+            demo_credentials.append({"email": c["email"], "password": password})
         await db.customers.insert_many(docs)
         customer_count = len(docs)
     except Exception as e:
@@ -151,7 +147,7 @@ async def seed_all(_admin=Depends(require_admin)):
         BASE_SCORES = {"AAPL": 72, "TSLA": 41, "NVDA": 88, "MSFT": 68, "GOOGL": 75, "AMZN": 63, "META": 58}
         PRICES = {"AAPL": 189.42, "TSLA": 248.17, "NVDA": 876.54, "MSFT": 415.22, "GOOGL": 175.83, "AMZN": 185.60, "META": 490.32}
 
-        influx_client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+        influx_client = influx.get_influx_client()
         buckets_api = influx_client.buckets_api()
         existing = [b.name for b in buckets_api.find_buckets().buckets]
         for bucket_name in ["sentiment_scores", "stock_trades"]:
@@ -171,7 +167,7 @@ async def seed_all(_admin=Depends(require_admin)):
                 p = (
                     Point("sentiment")
                     .tag("ticker", ticker)
-                    .tag("source", "newsapi")
+                    .tag("source", "demo")
                     .field("composite", float(round(score, 2)))
                     .field("score", float(round((score - 50) / 50, 4)))
                     .field("signal_count", float(random.randint(3, 20)))
@@ -190,6 +186,7 @@ async def seed_all(_admin=Depends(require_admin)):
                 .tag("ticker", ticker)
                 .tag("side", side)
                 .tag("customer_id", f"cust_{random.randint(1,8):03d}")
+                .tag("is_demo", "true")
                 .field("price", round(price, 2))
                 .field("quantity", qty)
                 .field("total_usd", round(price * qty, 2))
@@ -204,4 +201,10 @@ async def seed_all(_admin=Depends(require_admin)):
     except Exception as e:
         errors.append(f"InfluxDB: {str(e)}")
 
-    return {"ok": len(errors) == 0, "customers": customer_count, "influx_points": influx_count, "errors": errors}
+    return {
+        "ok": len(errors) == 0,
+        "customers": customer_count,
+        "influx_points": influx_count,
+        "demo_credentials": demo_credentials,
+        "errors": errors,
+    }

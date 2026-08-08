@@ -4,11 +4,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import random
+import secrets
 from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 from config import settings
+from services.auth import hash_password
+from services.influx import get_influx_client
+from tickers import TICKERS
 
 CUSTOMERS = [
     {"name": "Sarah Chen", "email": "sarah.chen@example.com", "portfolio_value": 142800, "watchlist": ["AAPL", "NVDA"], "risk_profile": "conservative", "sentiment_score": 87},
@@ -21,7 +25,7 @@ CUSTOMERS = [
     {"name": "Omar Hassan", "email": "omar.hassan@example.com", "portfolio_value": 310000, "watchlist": ["AAPL", "MSFT", "GOOGL", "NVDA"], "risk_profile": "conservative", "sentiment_score": 83},
 ]
 
-TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"]
+TICKERS = TICKERS
 BASE_SCORES = {"AAPL": 72, "TSLA": 41, "NVDA": 88, "MSFT": 68, "GOOGL": 75, "AMZN": 63, "META": 58}
 PRICES = {"AAPL": 189.42, "TSLA": 248.17, "NVDA": 876.54, "MSFT": 415.22, "GOOGL": 175.83, "AMZN": 185.60, "META": 490.32}
 
@@ -33,14 +37,20 @@ async def seed_mongo():
     await db.customers.drop()
     await db.customers.create_index("email", unique=True)
 
-    docs = [{**c, "created_at": datetime.now(timezone.utc) - timedelta(days=random.randint(30, 365))} for c in CUSTOMERS]
+    docs = []
+    for c in CUSTOMERS:
+        doc = dict(c)
+        password = secrets.token_urlsafe(12)
+        doc["password_hash"] = hash_password(password)
+        doc["created_at"] = datetime.now(timezone.utc) - timedelta(days=random.randint(30, 365))
+        docs.append(doc)
     await db.customers.insert_many(docs)
     print(f"Seeded {len(docs)} customers into MongoDB")
     client.close()
 
 
 def seed_influx():
-    client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+    client = get_influx_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
     buckets_api = client.buckets_api()
@@ -63,7 +73,7 @@ def seed_influx():
             p = (
                 Point("sentiment")
                 .tag("ticker", ticker)
-                .tag("source", "newsapi")
+                .tag("source", "demo")
                 .field("composite", float(round(score, 2)))
                 .field("score", float(round((score - 50) / 50, 4)))
                 .field("signal_count", float(random.randint(3, 20)))
@@ -82,6 +92,7 @@ def seed_influx():
             .tag("ticker", ticker)
             .tag("side", side)
             .tag("customer_id", f"cust_{random.randint(1,8):03d}")
+            .tag("is_demo", "true")
             .field("price", round(price, 2))
             .field("quantity", qty)
             .field("total_usd", round(price * qty, 2))

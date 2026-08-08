@@ -78,7 +78,8 @@ def run(ticker: str, days: int, horizon: int, json_out: str) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate the deployed model artifact on recent data")
     parser.add_argument("ticker", nargs="?", default="AAPL")
-    parser.add_argument("--days", type=int, default=120)
+    parser.add_argument("--days", type=int, default=lsp.LOOKBACK,
+                        help=f"daily bars to evaluate (default {lsp.LOOKBACK} = indicator lookback)")
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--json-out", default="")
     args = parser.parse_args()

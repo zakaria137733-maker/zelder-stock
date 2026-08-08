@@ -3,9 +3,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yfinance as yf
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
-from config import settings
+from services.influx import get_influx_client
 
 ticker = "AAPL"
 print("Fetching Yahoo Finance data...")
@@ -13,7 +13,7 @@ t = yf.Ticker(ticker)
 hist = t.history(period="1d", interval="1h")
 print(f"Got {len(hist)} rows")
 
-client = InfluxDBClient(url=settings.influx_url,token=settings.influx_token,org=settings.influx_org)
+client = get_influx_client()
 write_api = client.write_api(write_options=SYNCHRONOUS)
 
 points=[]

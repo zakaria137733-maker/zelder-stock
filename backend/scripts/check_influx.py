@@ -2,10 +2,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from influxdb_client import InfluxDBClient
-from config import settings
+from services.influx import get_influx_client
 
-client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+client = get_influx_client()
 query_api = client.query_api()
 
 flux = """

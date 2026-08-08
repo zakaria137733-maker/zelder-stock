@@ -12,18 +12,40 @@ from torch.utils.data import DataLoader, TensorDataset
 MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
 MODEL_PATH = f"{MODEL_DIR}/lstm_model.pt"
 SCALER_PATH = f"{MODEL_DIR}/scaler.json"
+PRED_THRESHOLDS_PATH = f"{MODEL_DIR}/predict_thresholds.json"
 
 SEQUENCE_LEN = 10
 FEATURES = 12
 HORIZON = 5
 LABEL_THRESHOLD = 1.0
+# Fixed indicator lookback shared by training and serving. Both build_sequences()
+# and build_raw_features() compute indicators over the (at most) LOOKBACK bars
+# ending at the window's final bar, so the deployed model always sees the same
+# feature distribution at inference that it was trained on (no cumulative
+# OBV/vwap drift from mismatched series lengths).
+LOOKBACK = 260
 HIDDEN_SIZE = 32
 NUM_LAYERS = 1
 DROPOUT = 0.5
 EPOCHS = 160
 LR = 0.001
+# Shared training hyperparameters — single-model train() and the 5-seed ensemble
+# use the SAME values so they never drift apart again.
+WEIGHT_DECAY = 1e-4
+GRAD_CLIP = 1.0
 
 ENSEMBLE_SEEDS = [42, 123, 7, 99, 2024]
+
+# The 7 tickers the live collector and GDELT backfill actually have sentiment
+# for. Training on anything else silently treats a missing sentiment series as
+# a constant 50.0, which makes the model's only unique input carry no signal.
+# Single source of truth lives in tickers.py.
+from tickers import TICKERS  # noqa: E402
+
+TRACKED_TICKERS = list(TICKERS)
+
+MIN_SENTIMENT_COVERAGE = 0.5
+MIN_MARKET_COVERAGE = 0.8
 
 
 class SentimentLSTM(nn.Module):
@@ -50,9 +72,21 @@ class SentimentLSTM(nn.Module):
         return self.classifier(last_hidden).squeeze(-1)
 
 
-def compute_indicators(prices: list, volumes: list, dates: list = None) -> dict:
-    close = pd.Series(prices)
-    volume = pd.Series(volumes)
+def compute_indicators(prices: list, volumes: list, dates: list = None, lookback: int = LOOKBACK) -> dict:
+    """Compute technical indicators on series.tail(lookback).
+
+    Both build_sequences() and build_raw_features() call this with a series that
+    is already truncated to the window's own LOOKBACK-bar context, so training
+    and serving compute indicators over identical bars (including cumulative
+    ones like OBV). The truncation here is a defensive no-op for those callers.
+
+    The returned arrays are aligned to the LAST `lookback` bars; callers index
+    them with ``idx - base`` where ``base = max(0, len(series) - lookback)``.
+    """
+    close = pd.Series(list(prices)[-lookback:])
+    volume = pd.Series(list(volumes)[-lookback:])
+    if dates is not None:
+        dates = list(dates)[-lookback:]
 
     rsi = ta.momentum.RSIIndicator(close, window=14).rsi()
     macd = ta.trend.MACD(close).macd()
@@ -102,26 +136,25 @@ def compute_indicators(prices: list, volumes: list, dates: list = None) -> dict:
 
 
 def fetch_training_data():
-    from influxdb_client import InfluxDBClient
+    """Fetch training rows for the sentiment-backed tickers only.
 
-    from config import settings
-    client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+    Restricting to TRACKED_TICKERS means the sentiment feature is always backed
+    by real data instead of silently defaulting to 50.0 (the 43 tickers without
+    a sentiment series previously polluted the training set with a constant
+    feature). Market context is joined from the market_index measurement.
+    """
+    from services.influx import get_influx_client
+
+    client = get_influx_client()
     query_api = client.query_api()
-    tickers = [
-    "AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META",
-    "AMD", "INTC", "QCOM", "AVGO", "MU", "SMCI", "ARM",
-    "JPM", "BAC", "GS", "MS", "V", "MA", "BRK-B",
-    "JNJ", "PFE", "UNH", "MRNA", "ABBV", "LLY",
-    "XOM", "CVX", "SLB", "COP",
-    "WMT", "HD", "NKE", "MCD", "SBUX", "COST",
-    "CRM", "SNOW", "PLTR", "NET", "DDOG", "NOW",
-    "SPY", "QQQ", "IWM", "XLK", "XLF", "XLE"]
+    tickers = TRACKED_TICKERS
     all_data = []
+    days_range = "-5y"
 
     for ticker in tickers:
-        sent_flux = f'from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "sentiment" and r.ticker == "{ticker}" and r._field == "composite") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])'
-        price_flux = f'from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "prices_daily" and r.ticker == "{ticker}" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])'
-        volume_flux = f'from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "prices_daily" and r.ticker == "{ticker}" and r._field == "volume") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])'
+        sent_flux = f'from(bucket: "sentiment_scores") |> range(start: {days_range}) |> filter(fn: (r) => r._measurement == "sentiment" and r.ticker == "{ticker}" and r._field == "composite" and r.source != "demo") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])'
+        price_flux = f'from(bucket: "sentiment_scores") |> range(start: {days_range}) |> filter(fn: (r) => r._measurement == "prices_daily" and r.ticker == "{ticker}" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])'
+        volume_flux = f'from(bucket: "sentiment_scores") |> range(start: {days_range}) |> filter(fn: (r) => r._measurement == "prices_daily" and r.ticker == "{ticker}" and r._field == "volume") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])'
 
         try:
             sent_map = {}
@@ -162,7 +195,9 @@ def fetch_training_data():
                 all_data.append({
                     "ticker": ticker,
                     "hour": hour,
+                    "time": hour,
                     "sentiment": sent_map.get(hour, 50.0),
+                    "_sentiment_present": hour in sent_map,
                     "price": price_map[hour],
                     "volume": volume_map.get(hour, 0.0),
                     "rsi": indicators["rsi"][idx],
@@ -185,6 +220,8 @@ def fetch_training_data():
                     "spy_ret": 0.0,
                     "qqq_ret": 0.0,
                     "vix": 20.0,
+                    "_spy_present": False,
+                    "_vix_present": False,
                 })
 
             print(f"  {ticker}: {len(price_map)} price pts, {len(sent_map)} sentiment pts")
@@ -233,9 +270,62 @@ def fetch_training_data():
         row["spy_ret"] = (spy_price - spy_prev) / spy_prev * 100 if spy_prev else 0
         row["qqq_ret"] = (qqq_price - qqq_prev) / qqq_prev * 100 if qqq_prev else 0
         row["vix"] = vix_map.get(hour, 20.0)
+        row["_spy_present"] = hour in spy_map
+        row["_vix_present"] = hour in vix_map
 
     client.close()
+    print_coverage_report(all_data)
     return all_data
+
+
+def coverage_report(data) -> dict:
+    """Per-ticker coverage of the features that can silently default to constants.
+
+    Missing sentiment defaults to 50.0, missing market context to spy_ret=0.0 /
+    vix=20.0. Both look like plausible real values, so a model trained or served
+    on thin data will quietly learn/emit nonsense. Every fetch path should call
+    this so gaps are loud, not silent.
+    """
+    from collections import defaultdict
+
+    by = defaultdict(lambda: {"days": 0, "sentiment": 0, "spy": 0, "vix": 0})
+    for row in data:
+        t = by[row["ticker"]]
+        t["days"] += 1
+        if row.get("_sentiment_present"):
+            t["sentiment"] += 1
+        if row.get("_spy_present"):
+            t["spy"] += 1
+        if row.get("_vix_present"):
+            t["vix"] += 1
+
+    report = {}
+    for ticker, counts in sorted(by.items()):
+        days = counts["days"]
+        report[ticker] = {
+            "days": days,
+            "sentiment": round(counts["sentiment"] / days, 3) if days else 0.0,
+            "spy": round(counts["spy"] / days, 3) if days else 0.0,
+            "vix": round(counts["vix"] / days, 3) if days else 0.0,
+        }
+    return report
+
+
+def print_coverage_report(data) -> dict:
+    """Print and return coverage_report(). Warns when floors are missed."""
+    report = coverage_report(data)
+    for ticker, cov in report.items():
+        flags = []
+        if cov["sentiment"] < MIN_SENTIMENT_COVERAGE:
+            flags.append(f"sentiment {cov['sentiment']:.0%} < {MIN_SENTIMENT_COVERAGE:.0%}")
+        if cov["spy"] < MIN_MARKET_COVERAGE:
+            flags.append(f"SPY {cov['spy']:.0%} < {MIN_MARKET_COVERAGE:.0%}")
+        if cov["vix"] < MIN_MARKET_COVERAGE:
+            flags.append(f"VIX {cov['vix']:.0%} < {MIN_MARKET_COVERAGE:.0%}")
+        status = "OK" if not flags else "WARN " + "; ".join(flags)
+        print(f"  coverage {ticker}: {cov['days']}d  sentiment={cov['sentiment']:.0%}  "
+              f"SPY={cov['spy']:.0%}  VIX={cov['vix']:.0%}  [{status}]")
+    return report
 
 
 def build_sequences(data, horizon=HORIZON, threshold=LABEL_THRESHOLD, return_times=False):
@@ -260,18 +350,6 @@ def build_sequences(data, horizon=HORIZON, threshold=LABEL_THRESHOLD, return_tim
     for _ticker, rows in by_ticker.items():
         rows = sorted(rows, key=lambda r: r.get("time") or r["hour"])
         prices = [r["price"] for r in rows]
-        volumes = [r.get("volume", 0.0) for r in rows]
-        dates = [r.get("time") or r["hour"] for r in rows]
-
-        if len(prices) >= 28:
-            try:
-                indicators = compute_indicators(prices, volumes, dates)
-            except Exception:
-                indicators = None
-        else:
-            indicators = None
-        if indicators is None:
-            indicators = _default_indicators(len(prices))
 
         for i in range(SEQUENCE_LEN, len(rows) - horizon):
             cur = prices[i]
@@ -284,15 +362,22 @@ def build_sequences(data, horizon=HORIZON, threshold=LABEL_THRESHOLD, return_tim
             else:
                 continue
 
+            indicators = _window_indicators(rows, i)
+            nctx = min(i + 1, LOOKBACK)
+            if indicators is None:
+                indicators = _default_indicators(nctx)
+            base = max(0, i - LOOKBACK + 1)
+
             start = i - SEQUENCE_LEN + 1
             window = []
             for pos, j in enumerate(range(start, i + 1)):
                 row = rows[j]
                 prev_price = rows[j - 1]["price"] if pos > 0 else row["price"]
+                rel = j - base
 
-                def ind(key, default, _idx=j, _indicators=indicators):
+                def ind(key, default, _rel=rel, _indicators=indicators):
                     vals = _indicators.get(key, [])
-                    return vals[_idx] if _idx < len(vals) else default
+                    return vals[_rel] if 0 <= _rel < len(vals) else default
 
                 window.append(_feature_row(row, prev_price, ind))
 
@@ -307,6 +392,26 @@ def build_sequences(data, horizon=HORIZON, threshold=LABEL_THRESHOLD, return_tim
     return X, y
 
 
+def _window_indicators(rows, i: int, lookback: int = LOOKBACK) -> dict | None:
+    """Indicators for a window ending at bar `i`, computed on the (at most)
+    LOOKBACK bars ending at `i`.
+
+    This is exactly the slice serving computes on (fetch_live_daily_context
+    returns ~LOOKBACK bars and build_raw_features() uses the same trailing
+    context), so cumulative indicators like OBV match training exactly.
+    """
+    context = rows[max(0, i - lookback + 1): i + 1]
+    prices = [r["price"] for r in context]
+    volumes = [r.get("volume", 0.0) for r in context]
+    dates = [r.get("time") or r.get("hour", "") for r in context]
+    if len(prices) < 28:
+        return None
+    try:
+        return compute_indicators(prices, volumes, dates)
+    except Exception:
+        return None
+
+
 def load_scaler() -> dict:
     """Load the per-feature min/max scaler saved at train time. Returns {} if absent."""
     if not os.path.exists(SCALER_PATH):
@@ -317,6 +422,55 @@ def load_scaler() -> dict:
     except Exception as e:
         print(f"Scaler load error: {e}")
         return {}
+
+
+def youden_threshold(y_true, prob_up) -> float:
+    """ROC threshold maximizing Youden's J = TPR - FPR for `prob_up`.
+
+    Used to turn continuous prob_up into BUY/SELL cutoffs instead of the old
+    arbitrary 0.53/0.47 band.
+    """
+    from sklearn.metrics import roc_curve
+
+    y = np.asarray(y_true)
+    p = np.asarray(prob_up)
+    if len(np.unique(y)) < 2 or len(y) < 2:
+        return 0.5
+    fpr, tpr, thr = roc_curve(y, p)
+    j = tpr - fpr
+    best = int(np.argmax(j))
+    return float(thr[best])
+
+
+def load_predict_thresholds() -> dict:
+    """Load per-ticker serving thresholds/gate written by scripts/eval_lstm_signal.py."""
+    if not os.path.exists(PRED_THRESHOLDS_PATH):
+        return {}
+    try:
+        with open(PRED_THRESHOLDS_PATH) as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Predict-thresholds load error: {e}")
+        return {}
+
+
+def signal_from_prob(prob_up: float, ticker: str, thresholds: dict | None = None) -> str:
+    """Decide the served signal for one ticker from walk-forward evidence.
+
+    Without a passing gate there is no demonstrated edge, so we return
+    NO_SIGNAL instead of a fabricated BUY/SELL. With a passing gate the Youden
+    thresholds from the walk-forward OOF predictions replace the old 0.53/0.47.
+    """
+    if thresholds is None:
+        thresholds = load_predict_thresholds()
+    meta = thresholds.get(ticker)
+    if not meta or not meta.get("gate"):
+        return "NO_SIGNAL"
+    if prob_up >= meta["buy_threshold"]:
+        return "BUY"
+    if prob_up <= meta["sell_threshold"]:
+        return "SELL"
+    return "NO_SIGNAL"
 
 
 def apply_scaler(window, scaler: dict) -> np.ndarray:
@@ -335,6 +489,25 @@ def apply_scaler(window, scaler: dict) -> np.ndarray:
             mn = float(params.get("min", 0.0))
             window[..., f] = (window[..., f] - mn) / rng
     return np.clip(window, -5, 5)
+
+
+def fit_scaler(X_raw) -> dict:
+    """Per-feature min/max scaler fitted on raw training windows.
+
+    The single source of truth for scaler construction, shared by the single-model
+    train() path and train_ensemble.py. Fit on the TRAIN fold only so the
+    validation/serving fold's stats never leak into the transform.
+    """
+    X = np.asarray(X_raw, dtype=np.float32)
+    n, _seq, n_features = X.shape
+    flat = X.reshape(-1, n_features)
+    params = {}
+    for f in range(n_features):
+        min_val = float(flat[:, f].min())
+        max_val = float(flat[:, f].max())
+        rng = max_val - min_val if max_val != min_val else 1.0
+        params[f] = {"min": min_val, "range": rng}
+    return params
 
 
 def _default_indicators(n: int) -> dict:
@@ -377,8 +550,11 @@ def build_raw_features(recent_data, indicators=None) -> np.ndarray | None:
     """Build the raw (pre-scaler) feature window for a single ticker's recent_data.
 
     Mirrors the per-step construction in build_sequences() exactly so inference
-    sees the same input distribution the model was trained on. Returns None if
-    there is not enough data.
+    sees the same input distribution the model was trained on. Indicators are
+    computed over the trailing (at most) LOOKBACK bars — the same slice
+    build_sequences() uses per window — so the served window matches training
+    (including cumulative features like OBV). Returns None if there is not
+    enough data.
     """
     if len(recent_data) < SEQUENCE_LEN:
         return None
@@ -394,18 +570,20 @@ def build_raw_features(recent_data, indicators=None) -> np.ndarray | None:
             except Exception:
                 indicators = None
         if indicators is None:
-            indicators = _default_indicators(len(prices))
+            indicators = _default_indicators(min(len(prices), LOOKBACK))
 
+    base = max(0, len(recent_data) - LOOKBACK)
     rows = recent_data[-SEQUENCE_LEN:]
     offset = len(recent_data) - SEQUENCE_LEN
     window = []
     for i, row in enumerate(rows):
         idx = offset + i
+        rel = idx - base
         prev_price = recent_data[offset + i - 1]["price"] if i > 0 else row["price"]
 
-        def ind(key, default, _idx=idx):
+        def ind(key, default, _rel=rel):
             vals = indicators.get(key, [])
-            return vals[_idx] if _idx < len(vals) else default
+            return vals[_rel] if 0 <= _rel < len(vals) else default
 
         window.append(_feature_row(row, prev_price, ind))
 
@@ -422,30 +600,31 @@ def _daily_returns(close_map: dict) -> dict:
     return rets
 
 
-def fetch_live_daily_context(ticker: str, days: int = 90) -> list[dict]:
+def fetch_live_daily_context(ticker: str, days: int = LOOKBACK) -> list[dict]:
     """Build recent_data at DAILY granularity to match fetch_training_data().
 
     Training reads daily bars from prices_daily and daily market_index series.
     Live inference must use the same granularity (10 daily steps).
     Daily closes come from prices_daily overlaid with fresh daily aggregates of
-    Daily closes come from prices_daily overlaid with fresh daily aggregates of
     the `prices` measurement; market context (spy_ret/vix) comes from the
     real market_index series instead of hardcoded defaults.
+
+    The default lookback is LOOKBACK bars so indicator computation at serving
+    time covers the same trailing context training uses (build_sequences).
     """
-    from influxdb_client import InfluxDBClient
-
     from config import settings
+    from services.influx import get_influx_client
 
-    client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+    client = get_influx_client()
     query_api = client.query_api()
     bucket = settings.influx_bucket
     try:
-        def query_map(measurement, field, agg, tag=ticker):
+        def query_map(measurement, field, agg, tag=ticker, extra_filter=""):
             flux = (
                 f'from(bucket: "{bucket}")'
                 f' |> range(start: -{days}d)'
                 f' |> filter(fn: (r) => r._measurement == "{measurement}"'
-                f' and r.ticker == "{tag}" and r._field == "{field}")'
+                f' and r.ticker == "{tag}" and r._field == "{field}"{extra_filter})'
                 f' |> aggregateWindow(every: 1d, fn: {agg}, createEmpty: false)'
                 f' |> sort(columns: ["_time"])'
             )
@@ -462,7 +641,7 @@ def fetch_live_daily_context(ticker: str, days: int = 90) -> list[dict]:
         price_volume = query_map("prices_daily", "volume", "last")
         live_close = query_map("prices", "close", "last")
         live_volume = query_map("prices", "volume", "last")
-        sent_map = query_map("sentiment", "composite", "mean")
+        sent_map = query_map("sentiment", "composite", "mean", extra_filter=' and r.source != "demo"')
 
         price_close.update(live_close)
         price_volume.update(live_volume)
@@ -479,8 +658,11 @@ def fetch_live_daily_context(ticker: str, days: int = 90) -> list[dict]:
                 "price": price_close[day],
                 "volume": price_volume.get(day, 0.0),
                 "sentiment": sent_map.get(day, 50.0),
+                "_sentiment_present": day in sent_map,
                 "spy_ret": spy_ret.get(day, 0.0),
+                "_spy_present": day in spy_map,
                 "vix": vix_map.get(day, 20.0),
+                "_vix_present": day in vix_map,
             })
         return rows
     finally:
@@ -495,7 +677,7 @@ def load_ensemble_models() -> list:
         if os.path.exists(path):
             try:
                 m = SentimentLSTM()
-                m.load_state_dict(torch.load(path, map_location="cpu"))
+                m.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
                 m.eval()
                 models.append(m)
             except Exception as e:
@@ -503,7 +685,7 @@ def load_ensemble_models() -> list:
     if not models and os.path.exists(MODEL_PATH):
         try:
             m = SentimentLSTM()
-            m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+            m.load_state_dict(torch.load(MODEL_PATH, map_location="cpu", weights_only=True))
             m.eval()
             models.append(m)
         except Exception as e:
@@ -632,23 +814,19 @@ def train():
     y_train_raw = y_train_raw[balanced_idx]
     print(f"Balanced train: {len(X_train_raw)} | Val: {len(X_val_raw)}")
 
-    X_train_clipped = np.clip(X_train_raw, -5, 5)
-    X_val_clipped = np.clip(X_val_raw, -5, 5)
-
-    scaler_params = {str(f): {"min": 0.0, "range": 1.0} for f in range(FEATURES)}
+    scaler_params = fit_scaler(X_train_raw)
     with open(SCALER_PATH, "w") as f:
         json.dump(scaler_params, f)
-
-    X_train = torch.tensor(X_train_clipped, dtype=torch.float32)
+    X_train = torch.tensor(apply_scaler(X_train_raw, scaler_params), dtype=torch.float32)
     y_train = torch.tensor(y_train_raw, dtype=torch.float32)
-    X_val = torch.tensor(X_val_clipped, dtype=torch.float32)
+    X_val = torch.tensor(apply_scaler(X_val_raw, scaler_params), dtype=torch.float32)
     y_val = torch.tensor(y_val_raw, dtype=torch.float32)
 
     dataset = TensorDataset(X_train, y_train)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
     model = SentimentLSTM()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.7)
     criterion = nn.BCELoss()
 
@@ -665,10 +843,8 @@ def train():
             optimizer.zero_grad()
             pred = model(X_batch).view(-1)
             loss = criterion(pred, y_batch)
-            l1_norm = sum(p.abs().sum() for p in model.parameters())
-            loss = loss + 1e-4 * l1_norm
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             optimizer.step()
             total_loss += loss.item()
         scheduler.step()
@@ -716,7 +892,7 @@ def predict(ticker, recent_data):
         return {"error": "Model not trained yet", "signal": "unknown"}
 
     model = SentimentLSTM()
-    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu", weights_only=True))
     model.eval()
 
     if len(recent_data) < SEQUENCE_LEN:
@@ -731,7 +907,59 @@ def predict(ticker, recent_data):
     with torch.no_grad():
         prob_up = float(model(X).view(-1).item())
 
-    signal = "BUY" if prob_up > 0.53 else "SELL" if prob_up < 0.47 else "HOLD"
+    thresholds = load_predict_thresholds()
+    signal = signal_from_prob(prob_up, ticker, thresholds)
+    confidence = max(prob_up, 1 - prob_up)
+
+    meta = thresholds.get(ticker)
+    return {
+        "ticker": ticker,
+        "signal": signal,
+        "prob_up": round(prob_up, 3),
+        "prob_down": round(1 - prob_up, 3),
+        "confidence": round(confidence, 3),
+        "confidence_pct": f"{confidence*100:.0f}%",
+        "signal_gate": bool(meta and meta.get("gate")),
+        "evidence": prediction_evidence(meta) if meta else None,
+    }
+
+
+def predict_ensemble(ticker: str, recent_data: list) -> dict:
+    """The single serving path behind /api/predictions.
+
+    Loads the deployed 5-seed ensemble (falling back to the single model),
+    builds the raw feature window, and returns the response envelope used by
+    the API. Replaces the old duplicate ensemble loop in routers/predictions.py.
+    """
+    if not os.path.exists(SCALER_PATH):
+        return {"error": "Model not trained", "signal": "HOLD",
+                "prob_up": 0.5, "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%"}
+
+    if len(recent_data) < SEQUENCE_LEN:
+        return {"error": f"Need {SEQUENCE_LEN} data points", "signal": "HOLD",
+                "prob_up": 0.5, "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%"}
+
+    window = build_raw_features(recent_data)
+    if window is None:
+        return {"error": f"Need {SEQUENCE_LEN} data points", "signal": "HOLD",
+                "prob_up": 0.5, "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%"}
+
+    X = torch.tensor(apply_scaler(window, load_scaler())[None], dtype=torch.float32)
+    probs = []
+    for model in load_ensemble_models():
+        with torch.no_grad():
+            probs.append(float(model(X).view(-1).item()))
+
+    if not probs:
+        return {"ticker": ticker, "signal": "HOLD", "prob_up": 0.5,
+                "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%",
+                "model_agreement": "N/A", "models_used": 0}
+
+    prob_up = float(np.mean(probs))
+    std = float(np.std(probs)) if len(probs) > 1 else 0.0
+    thresholds = load_predict_thresholds()
+    meta = thresholds.get(ticker)
+    signal = signal_from_prob(prob_up, ticker, thresholds)
     confidence = max(prob_up, 1 - prob_up)
 
     return {
@@ -741,4 +969,17 @@ def predict(ticker, recent_data):
         "prob_down": round(1 - prob_up, 3),
         "confidence": round(confidence, 3),
         "confidence_pct": f"{confidence*100:.0f}%",
+        "model_agreement": f"{max(0, (1 - std/0.5)*100):.0f}%",
+        "models_used": len(probs),
+        "signal_gate": bool(meta and meta.get("gate")),
+        "evidence": prediction_evidence(meta) if meta else None,
     }
+
+
+def prediction_evidence(meta: dict) -> dict:
+    """The walk-forward evidence behind a per-ticker signal, for API responses."""
+    keys = [
+        "n_windows", "lstm_acc", "momentum_acc", "majority_acc", "auc",
+        "balanced_accuracy", "p_vs_momentum", "buy_threshold", "sell_threshold",
+    ]
+    return {k: meta[k] for k in keys if k in meta}
