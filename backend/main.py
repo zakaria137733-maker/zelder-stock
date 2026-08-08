@@ -50,11 +50,14 @@ def _run_lightweight_collect():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db = mongo.get_db()
-    await db.customers.create_index("email", unique=True)
-    await db.customers.create_index("watchlist")
-    await db.customers.create_index([("sentiment_score", -1)])
-    print("ZelderStock API ready")
+    try:
+        db = mongo.get_db()
+        await db.customers.create_index("email", unique=True)
+        await db.customers.create_index("watchlist")
+        await db.customers.create_index([("sentiment_score", -1)])
+        print("ZelderStock API ready (MongoDB connected)")
+    except Exception as e:
+        print(f"WARNING: MongoDB unavailable at startup, continuing: {e}")
     yield
     await mongo.close()
 
