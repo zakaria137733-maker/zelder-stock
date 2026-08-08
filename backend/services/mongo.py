@@ -7,7 +7,6 @@ _client = None
 def get_client():
     global _client
     if _client is None:
-        print("Mongo URI:", repr(settings.mongo_uri))
         _client = AsyncIOMotorClient(settings.mongo_uri)
     return _client
 
