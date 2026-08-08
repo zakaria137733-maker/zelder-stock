@@ -23,6 +23,18 @@ export type Prediction = {
   confidence_pct: string;
   prob_up: number;
   prob_down: number;
+  signal_gate?: boolean;
+  evidence?: {
+    n_windows?: number;
+    lstm_acc?: number;
+    momentum_acc?: number;
+    majority_acc?: number;
+    auc?: number | null;
+    balanced_accuracy?: number;
+    p_vs_momentum?: number;
+    buy_threshold?: number;
+    sell_threshold?: number;
+  } | null;
 };
 
 export type Alert = {

@@ -1,7 +1,9 @@
 import secrets
+import time
+from collections import defaultdict, deque
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from config import settings
@@ -9,6 +11,26 @@ from services.auth import create_token, get_current_user, hash_password, verify_
 from services.mongo import get_db
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Simple in-process sliding-window limiter keyed by (scope, identity).
+_attempts: dict[tuple[str, str], deque] = defaultdict(deque)
+
+
+def _check_rate_limit(scope: str, identity: str) -> None:
+    key = (scope, identity.lower())
+    now = time.monotonic()
+    window = settings.auth_rate_window_seconds
+    limit = settings.auth_rate_limit
+    dq = _attempts[key]
+    while dq and now - dq[0] > window:
+        dq.popleft()
+    if len(dq) >= limit:
+        raise HTTPException(status_code=429, detail="Too many attempts — try again later")
+    dq.append(now)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 class AdminLoginBody(BaseModel):
@@ -20,7 +42,8 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 @admin_router.post("/login")
-async def admin_login(body: AdminLoginBody):
+async def admin_login(body: AdminLoginBody, request: Request):
+    _check_rate_limit("admin-login", _client_ip(request))
     if not settings.admin_username or not settings.admin_password:
         raise HTTPException(503, "ADMIN_USERNAME / ADMIN_PASSWORD are not configured")
     if not secrets.compare_digest(body.username, settings.admin_username):
@@ -47,7 +70,9 @@ class LoginBody(BaseModel):
 
 
 @router.post("/register")
-async def register(body: RegisterBody):
+async def register(body: RegisterBody, request: Request):
+    _check_rate_limit("register", _client_ip(request))
+    _check_rate_limit("register", body.email)
     db = get_db()
     existing = await db.customers.find_one({"email": body.email})
     if existing:
@@ -69,7 +94,9 @@ async def register(body: RegisterBody):
 
 
 @router.post("/login")
-async def login(body: LoginBody):
+async def login(body: LoginBody, request: Request):
+    _check_rate_limit("login", _client_ip(request))
+    _check_rate_limit("login", body.email)
     db = get_db()
     user = await db.customers.find_one({"email": body.email})
     if not user:

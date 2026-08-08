@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from models.schemas import TradeCreate
@@ -12,7 +14,15 @@ router=APIRouter(prefix="/api/transactions",tags=["transactions"])
 @router.get("/{ticker}")
 async def get_trades(ticker:str, limit:int=20, user=Depends(get_current_user)):
     ticker=validate_ticker(ticker)
-    trades=influx.query_recent_trades(ticker, limit)
+    db = get_db()
+    customer = await db.customers.find_one({"email": user["email"]})
+    if not customer:
+        raise HTTPException(404, "Customer account not found")
+    customer_id = str(customer["_id"])
+    loop = asyncio.get_event_loop()
+    trades = await loop.run_in_executor(
+        None, influx.query_recent_trades, ticker, limit, customer_id
+    )
     return {"ticker":ticker,"trades":trades}
 
 
@@ -24,11 +34,9 @@ async def record_trade(body:TradeCreate, user=Depends(get_current_user)):
         raise HTTPException(404, "Customer account not found")
     customer_id = str(customer["_id"])
 
-    influx.write_trade(
-        ticker=body.ticker.upper(),
-        side=body.side,
-        price=body.price,
-        quantity=body.quantity,
-        customer_id=customer_id,
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, influx.write_trade,
+        body.ticker.upper(), body.side, body.price, body.quantity, customer_id,
     )
     return {"ok":True,"total_usd":round(body.price*body.quantity,2),"customer_id":customer_id}

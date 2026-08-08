@@ -13,12 +13,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
-from collections import defaultdict
 from services.lstm_predictor import (
-    fetch_training_data, SentimentLSTM,
-    SEQUENCE_LEN, FEATURES, HIDDEN_SIZE, EPOCHS, LR
+    build_sequences,
+    fetch_training_data,
+    SentimentLSTM,
+    SEQUENCE_LEN, FEATURES, EPOCHS, LR
 )
-import json
 
 TRAIN_TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL"]
 TEST_TICKERS = ["AMZN", "META"]
@@ -26,52 +26,10 @@ SEED = 123
 
 
 def build_sequences_for_tickers(data, tickers):
-    by_ticker = defaultdict(list)
-    for row in data:
-        by_ticker[row["ticker"]].append(row)
-
-    X_all, y_all = [], []
-
-    for ticker in tickers:
-        if ticker not in by_ticker:
-            continue
-        rows = sorted(by_ticker[ticker], key=lambda r: r["hour"])
-        prices = [r["price"] for r in rows]
-
-        for i in range(SEQUENCE_LEN, len(rows) - 1):
-            window = []
-            for j in range(i - SEQUENCE_LEN, i):
-                r = rows[j]
-                price = r["price"]
-                prev_price = rows[j-1]["price"] if j > 0 else price
-                price_change = (price - prev_price) / prev_price * 100 if prev_price else 0
-                window.append([
-                    price,
-                    price_change,
-                    r["volume"],
-                    r["rsi"],
-                    r["macd"],
-                    r["bb_upper"],
-                    r.get("ma20", price),
-                    r.get("volatility", 0.0),
-                    r.get("vol_momentum", 1.0),
-                    r.get("day_of_week", 0.0),
-                ])
-
-            if i + 3 >= len(prices):
-                continue
-            pct_change = (prices[i + 3] - prices[i]) / prices[i] * 100
-            if pct_change > 0.2:
-                label = 1
-            elif pct_change < -0.2:
-                label = 0
-            else:
-                continue
-
-            X_all.append(window)
-            y_all.append(label)
-
-    return np.array(X_all, dtype=np.float32), np.array(y_all, dtype=np.float32)
+    subset = [r for r in data if r["ticker"] in tickers]
+    if not subset:
+        return np.empty((0, SEQUENCE_LEN, FEATURES), dtype=np.float32), np.empty((0,), dtype=np.float32)
+    return build_sequences(subset)
 
 
 def normalize(X_train, X_test):

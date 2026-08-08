@@ -38,6 +38,7 @@ if result is None:
     print("\nYour ensemble         : N/A — no trained models found in /app/models")
     print("Train an ensemble first (train_ensemble.py) and re-run this script.")
 else:
-    acc_deployed, _ = result
+    metrics, _ = result
+    acc_deployed = metrics["accuracy"]
     print(f"\nYour ensemble         : {acc_deployed:.1%}")
     print(f"Gap above best base   : {(acc_deployed - max(acc_up, acc_random, acc_momentum))*100:.1f} points")

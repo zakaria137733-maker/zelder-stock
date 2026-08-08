@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from services import influx
 from services.redis_client import cache_get, cache_set
+from tickers import TICKERS
 
 SHIFT_THRESHOLD=10.0
 WINDOW_HOURS=3
@@ -9,7 +10,7 @@ WINDOW_HOURS=3
 
 def detect_alerts()->list[dict]:
 
-    tickers = ["AAPL","TSLA","NVDA","MSFT","GOOGL","AMZN","META"]
+    tickers = TICKERS
     alerts = []
 
     for ticker in tickers:

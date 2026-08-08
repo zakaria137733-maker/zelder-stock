@@ -27,6 +27,7 @@ class CustomerCreate(BaseModel):
     portfolio_value:float=0.0
     watchlist: list[str]=["AAPL","TSLA","NVDA"]
     risk_profile:str="moderate"
+    password: str | None = None
 
 
 class CustomerOut(BaseModel):

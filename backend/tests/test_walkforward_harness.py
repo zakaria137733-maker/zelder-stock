@@ -1,5 +1,6 @@
 """Offline tests for the walk-forward harness (services/walkforward.py)."""
 
+import numpy as np
 import pytest
 
 from services import walkforward as wf
@@ -90,3 +91,42 @@ def test_threshold_changes_window_count():
     tight = wf.evaluate(prices, n_folds=5, threshold_pct=3.0)
     assert loose is not None and tight is not None
     assert loose["n_windows_total"] > tight["n_windows_total"]
+
+
+def test_evaluate_oof_returns_time_ordered_predictions():
+    prices = wf.synthetic_prices(n=800, seed=11)
+    oof = wf.evaluate_oof(prices, n_folds=5, models=["momentum", "majority_prior"])
+    assert oof is not None
+    for name in ("momentum", "majority_prior"):
+        assert len(oof[name]["pred"]) == len(oof[name]["true"]) > 0
+        assert all(y in (0, 1) for y in oof[name]["true"])
+    # pooled OOF accuracy equals re-computing accuracy over the pooled predictions
+    pooled = wf.evaluate_oof(prices, n_folds=5, models=["momentum"])
+    acc = float((np.asarray(pooled["momentum"]["pred"]) == np.asarray(pooled["momentum"]["true"])).mean())
+    assert 0.0 < acc < 1.0
+    # and matches the mean fold accuracy from evaluate() for a balanced split
+    summary = wf.evaluate(prices, n_folds=5, models=["momentum"])
+    assert acc == pytest.approx(summary["overall"]["momentum"], abs=0.05)
+
+
+def test_evaluate_oof_none_when_insufficient():
+    assert wf.evaluate_oof([100.0] * 15) is None
+
+
+def test_mcnemar_pvalue_identical_is_not_significant():
+    y = np.array([1, 0, 1, 0, 1, 0, 1, 0])
+    assert wf.mcnemar_pvalue(y, y, y) == 1.0
+
+
+def test_mcnemar_pvalue_detects_systematic_difference():
+    y = np.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0])
+    perfect = y
+    anti = 1 - y
+    assert wf.mcnemar_pvalue(y, perfect, anti) < 0.05
+
+
+def test_binomial_ci_sane_bounds():
+    lo, hi = wf.binomial_ci(100, 50)
+    assert lo <= 0.5 <= hi
+    assert 0.0 <= lo <= hi <= 1.0
+    assert wf.binomial_ci(0, 0) == (0.0, 0.0)

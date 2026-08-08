@@ -9,15 +9,32 @@ from config import settings
 _client: InfluxDBClient | None = None
 
 
+def get_influx_client() -> InfluxDBClient:
+    """Single factory for Influx clients, refusing to connect without a token."""
+    if not settings.influx_token:
+        raise RuntimeError(
+            "INFLUX_TOKEN is not set in the environment or .env — refusing to connect without a token"
+        )
+    return InfluxDBClient(
+        url=settings.influx_url,
+        token=settings.influx_token,
+        org=settings.influx_org,
+    )
+
+
 def get_client() -> InfluxDBClient:
     global _client
     if _client is None:
-        _client = InfluxDBClient(
-            url=settings.influx_url,
-            token=settings.influx_token,
-            org=settings.influx_org,
-        )
+        _client = get_influx_client()
     return _client
+
+
+def _clamp_hours(hours: int) -> int:
+    return max(1, min(int(hours), 24 * 365))
+
+
+def _clamp_limit(limit: int) -> int:
+    return max(1, min(int(limit), 1000))
 
 
 def write_sentiment(ticker: str, score: float, composite: float, source: str, signal_count: int = 1):
@@ -38,7 +55,7 @@ def write_sentiment(ticker: str, score: float, composite: float, source: str, si
         print(f"InfluxDB write error: {e}")
 
 
-def write_trade(ticker: str, side: str, price: float, quantity: int, customer_id: str = ""):
+def write_trade(ticker: str, side: str, price: float, quantity: int, customer_id: str = "", is_demo: bool = False):
     client = get_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
     point = (
@@ -51,6 +68,8 @@ def write_trade(ticker: str, side: str, price: float, quantity: int, customer_id
         .field("total_usd", float(price * quantity))
         .time(datetime.now(UTC))
     )
+    if is_demo:
+        point = point.tag("is_demo", "true")
     try:
         write_api.write(bucket="stock_trades", record=point)
     except InfluxDBError as e:
@@ -60,11 +79,13 @@ def write_trade(ticker: str, side: str, price: float, quantity: int, customer_id
 def query_sentiment_history(ticker: str, hours: int = 24) -> list[dict]:
     client = get_client()
     query_api = client.query_api()
+    hours = _clamp_hours(hours)
     flux = f"""
         from(bucket: "{settings.influx_bucket}")
           |> range(start: -{hours}h)
           |> filter(fn: (r) => r._measurement == "sentiment" and r.ticker == "{ticker}")
           |> filter(fn: (r) => r._field == "composite")
+          |> filter(fn: (r) => r.source != "demo")
           |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
           |> sort(columns: ["_time"])
     """
@@ -80,14 +101,17 @@ def query_sentiment_history(ticker: str, hours: int = 24) -> list[dict]:
         return []
 
 
-def query_recent_trades(ticker: str, limit: int = 20) -> list[dict]:
+def query_recent_trades(ticker: str, limit: int = 20, customer_id: str | None = None) -> list[dict]:
     client = get_client()
     query_api = client.query_api()
+    limit = _clamp_limit(limit)
+    customer_filter = f' and r.customer_id == "{customer_id}"' if customer_id else ""
     flux = f"""
         from(bucket: "stock_trades")
           |> range(start: -24h)
           |> filter(fn: (r) => r._measurement == "trades" and r.ticker == "{ticker}")
           |> filter(fn: (r) => r._field == "price")
+          |> filter(fn: (r) => r.is_demo != "true"){customer_filter}
           |> sort(columns: ["_time"], desc: true)
           |> limit(n: {limit})
     """
@@ -101,6 +125,7 @@ def query_recent_trades(ticker: str, limit: int = 20) -> list[dict]:
                     "ticker": record.values.get("ticker"),
                     "side": record.values.get("side"),
                     "price": record.get_value(),
+                    "customer_id": record.values.get("customer_id", ""),
                 })
         return results
     except Exception as e:
@@ -111,6 +136,7 @@ def query_recent_trades(ticker: str, limit: int = 20) -> list[dict]:
 def query_price_history(ticker: str, hours: int = 24) -> list[dict]:
     client = get_client()
     query_api = client.query_api()
+    hours = _clamp_hours(hours)
     flux = (
         f'from(bucket: "sentiment_scores")'
         f' |> range(start: -{hours}h)'

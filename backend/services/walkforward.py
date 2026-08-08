@@ -219,9 +219,46 @@ def _lstm_factory(rows, epochs=60, patience=8, seed=42):
         model.eval()
         with torch.no_grad():
             probs = model(torch.tensor(np.clip(X_te, -5, 5), dtype=torch.float32)).view(-1).numpy()
-        return (probs > 0.5).astype(float)
+        return probs
 
     return _lstm
+
+
+def _build_methods(momentum_window, models, rows):
+    """Resolve the methods dict for the given config."""
+    methods = {
+        "majority_prior": _majority_prior,
+        "momentum": _momentum(window=momentum_window),
+        "logistic": _logistic,
+    }
+    if _xgboost_available():
+        methods["xgboost"] = _xgboost
+    methods["mlp"] = _mlp
+    if rows is not None:
+        methods["lstm"] = _lstm_factory(rows)
+    if models:
+        methods = {k: v for k, v in methods.items() if k in models}
+    return methods
+
+
+def _iter_folds(labels, n_folds, min_train_windows):
+    """Yield (fold_k, train_idxs, train_ys, test_idxs, y_true) in time order."""
+    n = len(labels)
+    fold_size = n // n_folds
+    if fold_size == 0:
+        return
+    for k in range(1, n_folds):
+        start_idx = k * fold_size
+        end_idx = n if k == n_folds - 1 else (k + 1) * fold_size
+        train = labels[:start_idx]
+        test = labels[start_idx:end_idx]
+        if len(train) < min_train_windows or not test:
+            continue
+        train_idxs = np.array([i for i, _ in train], dtype=int)
+        train_ys = np.array([y for _, y in train], dtype=int)
+        test_idxs = np.array([i for i, _ in test], dtype=int)
+        y_true = np.array([y for _, y in test], dtype=int)
+        yield k, train_idxs, train_ys, test_idxs, y_true
 
 
 def evaluate(
@@ -251,38 +288,15 @@ def evaluate(
     if n < min_train_windows + fold_size or fold_size == 0:
         return None
 
-    methods = {
-        "majority_prior": _majority_prior,
-        "momentum": _momentum(window=momentum_window),
-        "logistic": _logistic,
-    }
-    if _xgboost_available():
-        methods["xgboost"] = _xgboost
-    methods["mlp"] = _mlp
-    if rows is not None:
-        methods["lstm"] = _lstm_factory(rows)
-    if models:
-        methods = {k: v for k, v in methods.items() if k in models}
-
+    methods = _build_methods(momentum_window, models, rows)
     folds = []
     per_method = {name: [] for name in methods}
 
-    for k in range(1, n_folds):
-        start_idx = k * fold_size
-        end_idx = n if k == n_folds - 1 else (k + 1) * fold_size
-        train = labels[:start_idx]
-        test = labels[start_idx:end_idx]
-        if len(train) < min_train_windows or not test:
-            continue
-
-        train_idxs = np.array([i for i, _ in train], dtype=int)
-        train_ys = np.array([y for _, y in train], dtype=int)
-        test_idxs = np.array([i for i, _ in test], dtype=int)
-        y_true = np.array([y for _, y in test], dtype=int)
-
-        fold = {"fold": k, "windows": int(len(test)), "up_share": float(y_true.mean())}
+    for k, train_idxs, train_ys, test_idxs, y_true in _iter_folds(labels, n_folds, min_train_windows):
+        fold = {"fold": k, "windows": int(len(test_idxs)), "up_share": float(y_true.mean())}
         for name, fn in methods.items():
-            y_pred = np.asarray(fn(prices, train_idxs, train_ys, test_idxs))
+            raw = np.asarray(fn(prices, train_idxs, train_ys, test_idxs))
+            y_pred = (raw > 0.5).astype(float) if name == "lstm" else raw
             acc = float(np.mean(y_pred == y_true))
             fold[name] = acc
             per_method[name].append(acc)
@@ -298,3 +312,76 @@ def evaluate(
         "overall": {name: float(np.mean(accs)) for name, accs in per_method.items()},
         "folds": folds,
     }
+
+
+def evaluate_oof(
+    prices,
+    n_folds=5,
+    horizon=5,
+    threshold_pct=1.0,
+    start=10,
+    momentum_window=5,
+    min_train_windows=20,
+    models=None,
+    rows=None,
+):
+    """Like evaluate() but returns pooled out-of-fold predictions per method.
+
+    Result: ``{method: {"pred": [...], "prob": [...], "true": [...]}}`` in time
+    order across all test folds. ``prob`` is populated for methods that emit
+    probabilities (currently ``lstm``), enabling ROC thresholds and calibration.
+    Returns None when there is not enough data.
+    """
+    labels = binary_labels(prices, horizon, threshold_pct, start)
+    n = len(labels)
+    fold_size = n // n_folds
+    if n < min_train_windows + fold_size or fold_size == 0:
+        return None
+
+    methods = _build_methods(momentum_window, models, rows)
+    out = {name: {"pred": [], "prob": [], "true": []} for name in methods}
+
+    for _k, train_idxs, train_ys, test_idxs, y_true in _iter_folds(labels, n_folds, min_train_windows):
+        for name, fn in methods.items():
+            raw = np.asarray(fn(prices, train_idxs, train_ys, test_idxs))
+            if name == "lstm":
+                out[name]["prob"].extend(raw.tolist())
+                out[name]["pred"].extend((raw > 0.5).astype(float).tolist())
+            else:
+                out[name]["pred"].extend(raw.tolist())
+            out[name]["true"].extend(y_true.tolist())
+    return out
+
+
+def binomial_ci(n, k, alpha=0.05):
+    """Wilson score interval for an observed rate k/n (e.g. accuracy)."""
+    if n == 0:
+        return (0.0, 0.0)
+    from scipy.stats import norm
+
+    p = k / n
+    z = norm.ppf(1 - alpha / 2.0)
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (centre - half, centre + half)
+
+
+def mcnemar_pvalue(y_true, y_a, y_b):
+    """Two-sided exact McNemar test that two classifiers disagree asymmetrically.
+
+    Tests whether classifier A is significantly more (or less) accurate than B,
+    using only the discordant pairs. A p < 0.05 means the accuracy difference is
+    unlikely under the null of equal error rates.
+    """
+    from scipy.stats import binomtest
+
+    y_true = np.asarray(y_true)
+    y_a = np.asarray(y_a)
+    y_b = np.asarray(y_b)
+    d01 = int(np.sum((y_a != y_true) & (y_b == y_true)))  # A wrong, B right
+    d10 = int(np.sum((y_a == y_true) & (y_b != y_true)))  # A right, B wrong
+    n = d01 + d10
+    if n == 0:
+        return 1.0
+    return float(binomtest(min(d01, d10), n, 0.5, alternative="two-sided").pvalue)

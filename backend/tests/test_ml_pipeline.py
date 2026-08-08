@@ -11,7 +11,6 @@ pytest.importorskip("torch")
 
 import numpy as np
 
-from routers import predictions as preds
 from services import lstm_predictor as lsp
 
 
@@ -110,9 +109,9 @@ def test_build_eval_sequences_insufficient_data():
 
 
 def test_ensemble_predict_graceful_when_not_trained(monkeypatch, tmp_path):
-    monkeypatch.setattr(preds, "SCALER_PATH", str(tmp_path / "scaler.json"))
-    monkeypatch.setattr(preds, "MODEL_DIR", str(tmp_path))
-    out = preds.ensemble_predict("AAPL", _rows(15))
+    monkeypatch.setattr(lsp, "SCALER_PATH", str(tmp_path / "scaler.json"))
+    monkeypatch.setattr(lsp, "MODEL_DIR", str(tmp_path))
+    out = lsp.predict_ensemble("AAPL", _rows(15))
     assert out["signal"] == "HOLD"
     assert "Model not trained" in out["error"]
     assert out["prob_up"] == 0.5
@@ -184,3 +183,101 @@ def test_classification_metrics_reports_auc_and_baseline():
     assert m["auc"] is not None and 0.0 <= m["auc"] <= 1.0
     assert 0.0 <= m["balanced_accuracy"] <= 1.0
     assert m["majority_baseline"] == pytest.approx(0.5)
+
+
+def _varying_rows(n, price=100.0):
+    rows = []
+    for i in range(n):
+        price = price * (1.0 + 0.01 * np.sin(i / 3.0) + 0.0015 * (i % 5))
+        rows.append({
+            "ticker": "AAPL",
+            "hour": f"2026-01-{i:04d}",
+            "time": f"2026-01-{i:04d}",
+            "price": price,
+            "volume": 1_000_000.0 + (i % 7) * 100_000.0,
+            "sentiment": 40.0 + (i % 9),
+            "spy_ret": 0.1 * (i % 3),
+            "vix": 16.0 + (i % 5),
+        })
+    return rows
+
+
+def test_train_and_serve_windows_are_identical():
+    """build_sequences() and build_raw_features() must produce the exact same
+    window for the same end bar, even when the series is longer than LOOKBACK
+    (the case that used to let cumulative indicators like OBV drift between
+    training and serving)."""
+    rows = _varying_rows(lsp.LOOKBACK + 60)
+    X, y, times = lsp.build_sequences(rows, horizon=lsp.HORIZON, return_times=True)
+    assert len(X) > 0
+    by_time = {}
+    for t, x in zip(times, X, strict=True):
+        by_time.setdefault(t, []).append(x)
+
+    for i in range(lsp.SEQUENCE_LEN, len(rows) - lsp.HORIZON):
+        t = rows[i]["time"]
+        if t not in by_time:
+            continue  # neutral window (no label)
+        raw = lsp.build_raw_features(rows[: i + 1])
+        assert raw is not None
+        for w in by_time[t]:
+            assert np.array_equal(raw, w), f"feature drift at end bar {i}"
+
+
+def test_build_raw_features_longer_than_lookback_uses_trailing_context():
+    rows = _varying_rows(lsp.LOOKBACK + 20)
+    # last window via full-length series must equal last window via explicit tail
+    full = lsp.build_raw_features(rows)
+    tail = lsp.build_raw_features(rows[-lsp.LOOKBACK:])
+    assert full is not None and tail is not None
+    assert np.allclose(full, tail)
+
+
+def test_fit_scaler_min_max_per_feature():
+    X = np.array([[[0.0, 10.0], [5.0, 30.0], [10.0, 20.0]]], dtype=np.float32)
+    s = lsp.fit_scaler(X)
+    assert s[0] == {"min": 0.0, "range": 10.0}
+    assert s[1] == {"min": 10.0, "range": 20.0}
+
+
+def test_fit_scaler_constant_feature_uses_unit_range():
+    X = np.zeros((2, 2, 1), dtype=np.float32)
+    s = lsp.fit_scaler(X)
+    assert s[0] == {"min": 0.0, "range": 1.0}
+
+
+def test_youden_threshold_on_perfectly_separable_probs():
+    y = np.array([1, 1, 1, 1, 0, 0, 0, 0])
+    p = np.array([0.9, 0.8, 0.7, 0.6, 0.4, 0.3, 0.2, 0.1])
+    t = lsp.youden_threshold(y, p)
+    assert 0.4 <= t <= 0.6
+
+
+def test_youden_threshold_degenerate():
+    assert lsp.youden_threshold(np.array([1, 1, 1]), np.array([0.5, 0.5, 0.5])) == 0.5
+
+
+def test_signal_from_prob_requires_gate():
+    th = {"AAPL": {"gate": False, "buy_threshold": 0.6, "sell_threshold": 0.4}}
+    assert lsp.signal_from_prob(0.9, "AAPL", th) == "NO_SIGNAL"
+    th["AAPL"]["gate"] = True
+    assert lsp.signal_from_prob(0.61, "AAPL", th) == "BUY"
+    assert lsp.signal_from_prob(0.39, "AAPL", th) == "SELL"
+    assert lsp.signal_from_prob(0.5, "AAPL", th) == "NO_SIGNAL"
+
+
+def test_signal_from_prob_without_thresholds_is_no_signal():
+    assert lsp.signal_from_prob(0.99, "AAPL", {}) == "NO_SIGNAL"
+
+
+def test_prediction_evidence_subset():
+    meta = {
+        "n_windows": 100, "lstm_acc": 0.55, "momentum_acc": 0.5, "auc": 0.58,
+        "p_vs_momentum": 0.03, "buy_threshold": 0.6, "sell_threshold": 0.4,
+        "gate": True, "internal_only": "dropped",
+    }
+    ev = lsp.prediction_evidence(meta)
+    assert "gate" not in ev
+    assert "internal_only" not in ev
+    assert ev["lstm_acc"] == 0.55
+    assert ev["p_vs_momentum"] == 0.03

@@ -5,9 +5,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yfinance as yf
 from datetime import datetime, timezone
-from influxdb_client import InfluxDBClient, Point
+from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 from config import settings
+from services.influx import get_influx_client
 
 TICKERS = [
     "AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META",
@@ -19,11 +20,14 @@ TICKERS = [
     "CRM", "SNOW", "PLTR", "NET", "DDOG", "NOW",
     "SPY", "QQQ", "IWM", "XLK", "XLF", "XLE",
 ]
-MARKET_TICKERS = ["^VIX"]
+# SPY/QQQ/VIX go into the market_index measurement (used by the LSTM for
+# spy_ret/qqq_ret/vix features). SPY and QQQ are fetched as regular Yahoo
+# tickers; only VIX needs the ^ prefix.
+MARKET_TICKERS = ["SPY", "QQQ", "^VIX"]
 
 def fetch_and_store(period="5y", tickers=None):
     tickers = tickers or TICKERS
-    client = InfluxDBClient(url=settings.influx_url, token=settings.influx_token, org=settings.influx_org)
+    client = get_influx_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
     total = 0
