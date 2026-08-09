@@ -24,10 +24,9 @@ print(f"Last price: {recent_data[-1]['price']}")
 
 prices = [r["price"] for r in recent_data]
 volumes = [0.0] * len(prices)
-dates = [r.get("time", "") for r in recent_data]
 
 print(f"Calling compute_indicators with {len(prices)} points...")
 from services.lstm_predictor import compute_indicators
-indicators = compute_indicators(prices, volumes, dates)
+indicators = compute_indicators(prices, volumes)
 print(f"RSI length: {len(indicators['rsi'])}")
 print("Success!")

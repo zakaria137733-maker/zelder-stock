@@ -47,6 +47,15 @@ Honest caveats about signal quality are in the ML section below.
             Next.js dashboard (frontend)
 ```
 
+The news collector runs as a **Temporal** scheduled workflow (every 5 min) rather
+than a bare cron or an in-process timer. Temporal gives the schedule durable
+state — if the worker or the server restarts, the schedule survives and the next
+run is never lost or double-fired — plus built-in retry semantics for the
+collect activity, so a transient news-feed failure is retried instead of silently
+dropping a ticker's daily composite. A cron would need an external supervisor and
+an operator to notice missed runs; Temporal makes the cadence part of the system
+itself.
+
 ## Tech stack
 
 | Layer | Choice |
@@ -146,6 +155,7 @@ Customer routes are scoped to the **authenticated user's own record** — the
 | POST | `/api/admin/collect` | **admin** | Trigger news collection |
 | GET | `/api/admin/collect/status` | **admin** | Collection status |
 | POST | `/api/admin/seed` | **admin** | Seed demo data |
+| GET | `/api/admin/eval/report` | **admin** | Honest eval report (deployed-model accuracy vs baselines + caveats) |
 | GET | `/health` | – | Health check |
 
 ## Machine learning: what it actually does (honest evaluation)
@@ -171,6 +181,13 @@ committed 5-seed ensemble (`lstm_model_42.pt` … `lstm_model_2024.pt`) plus the
 single `lstm_model.pt` fallback and `scaler.json` and asserts the serving
 pipeline produces sane probabilities — so the shipped artifact is under test,
 not just some freshly-trained twin.
+
+The committed report (`backend/models/eval_report.json`) is also served to the
+dashboard: `GET /api/admin/eval/report` returns the report plus the caveats
+verbatim, and the **Model Evaluation** page (sidebar → System, admin-gated)
+renders accuracy vs. the majority and coin-flip baselines, the per-ticker
+table, and the caveats. The honest numbers live in the product, not just the
+README.
 
 **Walk-forward harness.** `scripts/eval_walkforward.py` (offline by default,
 `--ticker` for real data, `--thresholds` for a label-threshold sweep) evaluates any
@@ -201,8 +218,9 @@ so it cannot be judged over the 5-year window yet. The harness lives in
 - The dataset is short (90 days of daily bars per ticker) and daily-aggregated,
   so sample counts are small and results are not statistically robust.
 - A recent run of `eval_deployed.py` on AAPL (120 days, 59 windows) scored
-  **0.31 accuracy vs a 0.71 up-majority baseline** — honest, and it shows why
-  this powers a dashboard signal rather than autonomous trading.
+  **0.42 accuracy vs a 0.69 up-majority baseline** (balanced accuracy 0.45,
+  AUC 0.35) — honest, and it shows why this powers a dashboard signal rather
+  than autonomous trading.
 - `scripts/test_ensemble.py`, `test_walkforward.py`, `test_permutation.py`, and
   `test_generalization.py` train **their own** models with their own hyperparameters
   and do **not** measure the deployed artifact — treat their numbers separately.
@@ -240,18 +258,18 @@ npm run lint       # eslint
 
 ```
 backend/
-  main.py               FastAPI app, admin endpoints
+  main.py               FastAPI app wiring (routers only)
   config.py             Settings from .env (pydantic-settings)
   tickers.py            Shared ticker list + validation
-  routers/              API route modules
+  routers/              API route modules (admin: collect/seed/eval report)
   services/             auth, influx, mongo, redis, sentiment, alerts, lstm_predictor
   workers/              Temporal worker, activities, workflows
   tests/                pytest suite (unit: offline fake DB; integration: real services)
   scripts/              One-off / operational scripts (seed, collect, train, backtest, eval)
-  models/               Trained artifacts (lstm_model*.pt, scaler.json)
+  models/               Trained artifacts (lstm_model*.pt, scaler.json, eval_report.json)
 frontend/
   app/                  Next.js app router (login, dashboard)
-  components/           UI components (charts, signal feed, customers table)
+  components/           UI components (charts, signal feed, customers, evaluation)
   lib/api.ts            Axios client with JWT interceptor
   __tests__/            Vitest + Testing Library (auth flow, components)
 ```

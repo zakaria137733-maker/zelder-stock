@@ -1,0 +1,14 @@
+{
+  "ticker": "AAPL",
+  "days": 120,
+  "horizon": 5,
+  "windows": 59,
+  "up_samples": 41,
+  "down_samples": 18,
+  "accuracy": 0.4237,
+  "balanced_accuracy": 0.4451,
+  "auc": 0.3482,
+  "accuracy_up": 0.3902,
+  "accuracy_down": 0.5,
+  "baseline": 0.6949
+}

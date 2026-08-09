@@ -38,8 +38,8 @@ describe("LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Admin Sign In" }));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/"));
-    expect(localStorage.getItem("zs_token")).toBe("t-123");
-    expect(JSON.parse(localStorage.getItem("zs_user") ?? "{}")).toEqual({ name: "root", role: "admin" });
+    expect(localStorage.getItem("sentimentiq_token")).toBe("t-123");
+    expect(JSON.parse(localStorage.getItem("sentimentiq_user") ?? "{}")).toEqual({ name: "root", role: "admin" });
   });
 
   it("requires username and password in admin mode without calling the API", () => {
@@ -71,6 +71,6 @@ describe("LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/"));
-    expect(JSON.parse(localStorage.getItem("zs_user") ?? "{}")).toEqual({ name: "Alice", email: "a@b.com" });
+    expect(JSON.parse(localStorage.getItem("sentimentiq_user") ?? "{}")).toEqual({ name: "Alice", email: "a@b.com" });
   });
 });

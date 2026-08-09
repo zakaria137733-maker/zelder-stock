@@ -120,6 +120,7 @@ def test_ensemble_predict_graceful_when_not_trained(monkeypatch, tmp_path):
 def test_evaluate_deployed_returns_none_without_models(monkeypatch, tmp_path):
     monkeypatch.setattr(lsp, "SCALER_PATH", str(tmp_path / "scaler.json"))
     monkeypatch.setattr(lsp, "MODEL_DIR", str(tmp_path))
+    monkeypatch.setattr(lsp, "MODEL_PATH", str(tmp_path / "lstm_model.pt"))
     X = np.zeros((3, 10, 12), dtype=np.float32)
     y = np.array([1, 0, 1])
     assert lsp.evaluate_deployed(X, y) is None
@@ -281,3 +282,61 @@ def test_prediction_evidence_subset():
     assert "internal_only" not in ev
     assert ev["lstm_acc"] == 0.55
     assert ev["p_vs_momentum"] == 0.03
+
+
+def _cov_rows(days, sentiment_present=True, spy_present=True, vix_present=True):
+    return [{
+        "ticker": "AAPL",
+        "time": f"2026-01-{i % 28 + 1:02d}",
+        "price": 100.0 + i,
+        "_sentiment_present": sentiment_present,
+        "_spy_present": spy_present,
+        "_vix_present": vix_present,
+    } for i in range(days)]
+
+
+def test_require_coverage_passes_with_full_coverage():
+    report = lsp.require_coverage(_cov_rows(300))
+    assert report["AAPL"]["sentiment"] == 1.0
+    assert report["AAPL"]["spy"] == 1.0
+    assert report["AAPL"]["vix"] == 1.0
+
+
+def test_require_coverage_raises_on_missing_sentiment():
+    with pytest.raises(RuntimeError, match="sentiment"):
+        lsp.require_coverage(_cov_rows(300, sentiment_present=False))
+
+
+def test_require_coverage_raises_on_missing_market_context():
+    with pytest.raises(RuntimeError, match="SPY"):
+        lsp.require_coverage(_cov_rows(300, spy_present=False))
+    with pytest.raises(RuntimeError, match="VIX"):
+        lsp.require_coverage(_cov_rows(300, vix_present=False))
+
+
+def test_ind_value_aligns_to_last_lookback_bars():
+    # compute_indicators returns arrays of length LOOKBACK aligned to the last
+    # LOOKBACK bars; rel < 0 (bars before that context) falls back to default.
+    ind = {"rsi": [10.0] * lsp.LOOKBACK}
+    assert lsp._ind_value(ind, "rsi", -1, 50.0) == 50.0    # before context → default
+    assert lsp._ind_value(ind, "rsi", 0, 50.0) == 10.0      # context start → value
+    assert lsp._ind_value(ind, "rsi", lsp.LOOKBACK - 1, 50.0) == 10.0
+    assert lsp._ind_value(ind, "rsi", lsp.LOOKBACK, 50.0) == 50.0  # past context → default
+    assert lsp._ind_value({}, "macd", 0, 0.0) == 0.0
+
+
+def test_persistence_baseline_predicts_last_bar_direction():
+    rows = _varying_rows(40)
+    X, y = lsp.build_eval_sequences(rows, horizon=5)
+    b = lsp.persistence_baseline(X, y)
+    assert 0.0 <= b <= 1.0
+    # Monotonic up series → last bar always up → persistence perfectly predicts up.
+    mono = [{"ticker": "AAPL", "hour": f"2026-01-{i + 1:02d}", "price": 100.0 + i,
+             "volume": 1000.0, "sentiment": 60.0, "spy_ret": 0.1, "vix": 18.0}
+            for i in range(40)]
+    Xm, ym = lsp.build_eval_sequences(mono, horizon=5)
+    assert lsp.persistence_baseline(Xm, ym) == 1.0
+
+
+def test_persistence_baseline_empty():
+    assert lsp.persistence_baseline(np.empty((0, 10, 12), dtype=np.float32), np.array([])) == 0.0

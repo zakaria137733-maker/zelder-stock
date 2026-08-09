@@ -8,6 +8,7 @@ import SentimentFeed from "@/components/SentimentFeed";
 import MarketData from "@/components/MarketData";
 import Customers from "@/components/Customers";
 import Transactions from "@/components/Transactions";
+import Evaluation from "@/components/Evaluation";
 
 const TITLES: Record<string, string> = {
   dashboard: "Market Overview",
@@ -15,6 +16,7 @@ const TITLES: Record<string, string> = {
   market: "Market Data",
   customers: "Customer Database · MongoDB",
   transactions: "Stock Transactions · InfluxDB",
+  evaluation: "Model Evaluation",
   settings: "Settings",
 };
 
@@ -24,7 +26,7 @@ export default function Home() {
   const router = useRouter();
 
   useEffect(() => {
-    const token = localStorage.getItem("zs_token");
+    const token = localStorage.getItem("sentimentiq_token");
     if (!token) router.push("/login");
   }, [router]);
 
@@ -39,6 +41,7 @@ export default function Home() {
           {view === "market" && <MarketData />}
           {view === "customers" && <Customers />}
           {view === "transactions" && <Transactions ticker={ticker} />}
+          {view === "evaluation" && <Evaluation />}
           {view === "settings" && (
             <div style={{ padding: 20 }}>
               <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 40, textAlign: "center", color: "var(--muted)", fontSize: 13 }}>

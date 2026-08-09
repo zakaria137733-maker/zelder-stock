@@ -19,8 +19,8 @@ export default function LoginPage() {
       setLoading(true);
       try {
         const { data } = await api.post("/api/admin/login", { username: form.username, password: form.password });
-        localStorage.setItem("zs_token", data.token);
-        localStorage.setItem("zs_user", JSON.stringify({ name: data.username, role: "admin" }));
+        localStorage.setItem("sentimentiq_token", data.token);
+        localStorage.setItem("sentimentiq_user", JSON.stringify({ name: data.username, role: "admin" }));
         router.push("/");
       } catch (e: unknown) {
         const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -42,8 +42,8 @@ export default function LoginPage() {
         : { name: form.name, email: form.email, password: form.password };
 
       const { data } = await api.post(endpoint, body);
-      localStorage.setItem("zs_token", data.token);
-      localStorage.setItem("zs_user", JSON.stringify({ name: data.name, email: data.email }));
+      localStorage.setItem("sentimentiq_token", data.token);
+      localStorage.setItem("sentimentiq_user", JSON.stringify({ name: data.name, email: data.email }));
       router.push("/");
     } catch (e: unknown) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;

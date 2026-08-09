@@ -6,7 +6,7 @@ import pandas as pd
 import ta
 import torch
 import torch.nn as nn
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score
 from torch.utils.data import DataLoader, TensorDataset
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
@@ -72,7 +72,7 @@ class SentimentLSTM(nn.Module):
         return self.classifier(last_hidden).squeeze(-1)
 
 
-def compute_indicators(prices: list, volumes: list, dates: list = None, lookback: int = LOOKBACK) -> dict:
+def compute_indicators(prices: list, volumes: list, lookback: int = LOOKBACK) -> dict:
     """Compute technical indicators on series.tail(lookback).
 
     Both build_sequences() and build_raw_features() call this with a series that
@@ -85,8 +85,6 @@ def compute_indicators(prices: list, volumes: list, dates: list = None, lookback
     """
     close = pd.Series(list(prices)[-lookback:])
     volume = pd.Series(list(volumes)[-lookback:])
-    if dates is not None:
-        dates = list(dates)[-lookback:]
 
     rsi = ta.momentum.RSIIndicator(close, window=14).rsi()
     macd = ta.trend.MACD(close).macd()
@@ -107,13 +105,6 @@ def compute_indicators(prices: list, volumes: list, dates: list = None, lookback
     cci = ta.trend.CCIIndicator(close, close, close, window=20).cci()
     vwap = (close * volume).cumsum() / volume.cumsum().replace(0, 1)
 
-    day_of_week = pd.Series([0.0] * len(prices))
-    if dates:
-        try:
-            day_of_week = pd.Series([pd.Timestamp(d).dayofweek / 4.0 for d in dates])
-        except Exception:
-            pass
-
     return {
         "rsi": rsi.fillna(50).tolist(),
         "macd": macd.fillna(0).tolist(),
@@ -131,8 +122,20 @@ def compute_indicators(prices: list, volumes: list, dates: list = None, lookback
         "williams_r": williams_r.fillna(-50).tolist(),
         "cci": cci.fillna(0).tolist(),
         "vwap": vwap.fillna(close).tolist(),
-        "day_of_week": day_of_week.tolist(),
     }
+
+
+def _ind_value(indicators: dict, key: str, rel: int, default: float) -> float:
+    """Resolve one indicator value at a relative offset, or `default`.
+
+    compute_indicators() returns arrays aligned to the LAST LOOKBACK bars.
+    Callers must index them with ``rel = idx - base`` where
+    ``base = max(0, len(series) - LOOKBACK)``; bars before that context have no
+    computed value and fall back to `default`. This is the same rule
+    build_sequences()/build_raw_features() use, so every consumer stays aligned.
+    """
+    vals = indicators.get(key, [])
+    return vals[rel] if 0 <= rel < len(vals) else default
 
 
 def fetch_training_data():
@@ -150,6 +153,7 @@ def fetch_training_data():
     tickers = TRACKED_TICKERS
     all_data = []
     days_range = "-5y"
+    fetch_errors = {}
 
     for ticker in tickers:
         sent_flux = f'from(bucket: "sentiment_scores") |> range(start: {days_range}) |> filter(fn: (r) => r._measurement == "sentiment" and r.ticker == "{ticker}" and r._field == "composite" and r.source != "demo") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])'
@@ -180,7 +184,7 @@ def fetch_training_data():
             volumes_list = [volume_map.get(h, 0.0) for h in hours]
 
             if len(prices_list) >= 50:
-                indicators = compute_indicators(prices_list, volumes_list, hours)
+                indicators = compute_indicators(prices_list, volumes_list)
             else:
                 n = len(hours)
                 indicators = {k: [v] * n for k, v in [
@@ -188,35 +192,40 @@ def fetch_training_data():
                     ("bb_width", 0.0), ("ma20", 0.0), ("ema20", 0.0), ("ema50", 0.0),
                     ("atr", 0.0), ("vol_momentum", 1.0), ("adx", 25.0), ("obv", 0.0),
                     ("stoch", 50.0), ("williams_r", -50.0), ("cci", 0.0), ("vwap", 0.0),
-                    ("day_of_week", 0.0),
                 ]}
 
+            # compute_indicators() arrays are aligned to the LAST LOOKBACK bars;
+            # index them at rel = idx - base (never the raw row index — that used
+            # to overflow once a ticker had more than LOOKBACK days, truncating
+            # each ticker to its oldest 260 days and misaligning every indicator).
+            base = max(0, len(hours) - LOOKBACK)
             for idx, hour in enumerate(hours):
+                rel = idx - base
+                price = price_map[hour]
                 all_data.append({
                     "ticker": ticker,
                     "hour": hour,
                     "time": hour,
                     "sentiment": sent_map.get(hour, 50.0),
                     "_sentiment_present": hour in sent_map,
-                    "price": price_map[hour],
+                    "price": price,
                     "volume": volume_map.get(hour, 0.0),
-                    "rsi": indicators["rsi"][idx],
-                    "macd": indicators["macd"][idx],
-                    "bb_upper": indicators["bb_upper"][idx],
-                    "bb_lower": indicators["bb_lower"][idx],
-                    "bb_width": indicators["bb_width"][idx],
-                    "ma20": indicators["ma20"][idx],
-                    "ema20": indicators["ema20"][idx],
-                    "ema50": indicators["ema50"][idx],
-                    "atr": indicators["atr"][idx],
-                    "vol_momentum": indicators["vol_momentum"][idx],
-                    "adx": indicators["adx"][idx],
-                    "obv": indicators["obv"][idx],
-                    "stoch": indicators["stoch"][idx],
-                    "williams_r": indicators["williams_r"][idx],
-                    "cci": indicators["cci"][idx],
-                    "vwap": indicators["vwap"][idx],
-                    "day_of_week": indicators["day_of_week"][idx],
+                    "rsi": _ind_value(indicators, "rsi", rel, 50.0),
+                    "macd": _ind_value(indicators, "macd", rel, 0.0),
+                    "bb_upper": _ind_value(indicators, "bb_upper", rel, price),
+                    "bb_lower": _ind_value(indicators, "bb_lower", rel, price),
+                    "bb_width": _ind_value(indicators, "bb_width", rel, 0.0),
+                    "ma20": _ind_value(indicators, "ma20", rel, price),
+                    "ema20": _ind_value(indicators, "ema20", rel, price),
+                    "ema50": _ind_value(indicators, "ema50", rel, price),
+                    "atr": _ind_value(indicators, "atr", rel, 0.0),
+                    "vol_momentum": _ind_value(indicators, "vol_momentum", rel, 1.0),
+                    "adx": _ind_value(indicators, "adx", rel, 25.0),
+                    "obv": _ind_value(indicators, "obv", rel, 0.0),
+                    "stoch": _ind_value(indicators, "stoch", rel, 50.0),
+                    "williams_r": _ind_value(indicators, "williams_r", rel, -50.0),
+                    "cci": _ind_value(indicators, "cci", rel, 0.0),
+                    "vwap": _ind_value(indicators, "vwap", rel, price),
                     "spy_ret": 0.0,
                     "qqq_ret": 0.0,
                     "vix": 20.0,
@@ -227,16 +236,25 @@ def fetch_training_data():
             print(f"  {ticker}: {len(price_map)} price pts, {len(sent_map)} sentiment pts")
 
         except Exception as e:
-            print(f"  Error {ticker}: {e}")
+            fetch_errors[ticker] = str(e)
+
+    if fetch_errors:
+        client.close()
+        raise RuntimeError(
+            "Failed to fetch "
+            + ", ".join(f"{t} ({m})" for t, m in fetch_errors.items())
+            + " — refusing to train on partial data."
+        )
 
     # Fetch market indices
     print("Fetching market indices...")
     spy_map, qqq_map, vix_map = {}, {}, {}
     index_queries = [
-        ('from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "SPY" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', spy_map, "SPY"),
-        ('from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "QQQ" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', qqq_map, "QQQ"),
-        ('from(bucket: "sentiment_scores") |> range(start: -2y) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "VIX" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', vix_map, "VIX"),
+        (f'from(bucket: "sentiment_scores") |> range(start: {days_range}) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "SPY" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', spy_map, "SPY"),
+        (f'from(bucket: "sentiment_scores") |> range(start: {days_range}) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "QQQ" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', qqq_map, "QQQ"),
+        (f'from(bucket: "sentiment_scores") |> range(start: {days_range}) |> filter(fn: (r) => r._measurement == "market_index" and r.ticker == "VIX" and r._field == "close") |> aggregateWindow(every: 1d, fn: mean, createEmpty: false) |> sort(columns: ["_time"])', vix_map, "VIX"),
     ]
+    index_errors = []
     for flux, target, name in index_queries:
         try:
             for table in query_api.query(flux):
@@ -244,28 +262,38 @@ def fetch_training_data():
                     day = record.get_time().strftime("%Y-%m-%d")
                     target[day] = record.get_value()
         except Exception as e:
+            index_errors.append(f"{name}: {e}")
             print(f"  {name} error: {e}")
+    if index_errors:
+        client.close()
+        raise RuntimeError(
+            "Market index queries failed — " + "; ".join(index_errors)
+            + " — refusing to train on partial market context."
+        )
 
     print(f"  SPY: {len(spy_map)} pts | QQQ: {len(qqq_map)} pts | VIX: {len(vix_map)} pts")
 
     spy_hours = sorted(spy_map.keys())
     qqq_hours = sorted(qqq_map.keys())
 
+    # Precomputed {day: previous-day close} so the per-row loop is O(1) instead of
+    # re-scanning the sorted day list for every row.
+    def prev_close_map(day_map, hours):
+        prev = {}
+        for i, day in enumerate(hours):
+            prev[day] = day_map[hours[i - 1]] if i > 0 else day_map[day]
+        return prev
+
+    spy_prev_map = prev_close_map(spy_map, spy_hours)
+    qqq_prev_map = prev_close_map(qqq_map, qqq_hours)
+
     for row in all_data:
         hour = row["hour"]
         spy_price = spy_map.get(hour, 0)
-        if hour in spy_map and spy_hours:
-            spy_idx = spy_hours.index(hour)
-            spy_prev = spy_map.get(spy_hours[spy_idx - 1], spy_price) if spy_idx > 0 else spy_price
-        else:
-            spy_prev = spy_price
+        spy_prev = spy_prev_map.get(hour, spy_price)
 
         qqq_price = qqq_map.get(hour, 0)
-        if hour in qqq_map and qqq_hours:
-            qqq_idx = qqq_hours.index(hour)
-            qqq_prev = qqq_map.get(qqq_hours[qqq_idx - 1], qqq_price) if qqq_idx > 0 else qqq_price
-        else:
-            qqq_prev = qqq_price
+        qqq_prev = qqq_prev_map.get(hour, qqq_price)
 
         row["spy_ret"] = (spy_price - spy_prev) / spy_prev * 100 if spy_prev else 0
         row["qqq_ret"] = (qqq_price - qqq_prev) / qqq_prev * 100 if qqq_prev else 0
@@ -325,6 +353,35 @@ def print_coverage_report(data) -> dict:
         status = "OK" if not flags else "WARN " + "; ".join(flags)
         print(f"  coverage {ticker}: {cov['days']}d  sentiment={cov['sentiment']:.0%}  "
               f"SPY={cov['spy']:.0%}  VIX={cov['vix']:.0%}  [{status}]")
+    return report
+
+
+def require_coverage(data) -> dict:
+    """Hard gate: raise RuntimeError when coverage floors are missed.
+
+    Missing sentiment defaults to 50.0, missing market context to spy_ret=0.0 /
+    vix=20.0 — both look like plausible real values, so a model trained on thin
+    data quietly learns/emits nonsense. The coverage report only *warns*; this
+    is what makes training stop instead of producing a confident-looking model
+    with no signal. Returns the report when coverage is acceptable.
+    """
+    report = coverage_report(data)
+    failures = []
+    for ticker, cov in report.items():
+        if cov["sentiment"] < MIN_SENTIMENT_COVERAGE:
+            failures.append(f"{ticker}: sentiment {cov['sentiment']:.0%} < {MIN_SENTIMENT_COVERAGE:.0%}")
+        if cov["spy"] < MIN_MARKET_COVERAGE:
+            failures.append(f"{ticker}: SPY {cov['spy']:.0%} < {MIN_MARKET_COVERAGE:.0%}")
+        if cov["vix"] < MIN_MARKET_COVERAGE:
+            failures.append(f"{ticker}: VIX {cov['vix']:.0%} < {MIN_MARKET_COVERAGE:.0%}")
+    if failures:
+        raise RuntimeError(
+            "Training data coverage is below the minimum floors — refusing to train a model on "
+            "constant/missing features. Backfill the data first and retry:\n"
+            "    docker-compose exec api python scripts/backfill_sentiment.py\n"
+            "    docker-compose exec api python scripts/fetch_historical.py --period 5y\n"
+            + "\n".join("  " + f for f in failures)
+        )
     return report
 
 
@@ -403,11 +460,10 @@ def _window_indicators(rows, i: int, lookback: int = LOOKBACK) -> dict | None:
     context = rows[max(0, i - lookback + 1): i + 1]
     prices = [r["price"] for r in context]
     volumes = [r.get("volume", 0.0) for r in context]
-    dates = [r.get("time") or r.get("hour", "") for r in context]
     if len(prices) < 28:
         return None
     try:
-        return compute_indicators(prices, volumes, dates)
+        return compute_indicators(prices, volumes)
     except Exception:
         return None
 
@@ -561,12 +617,11 @@ def build_raw_features(recent_data, indicators=None) -> np.ndarray | None:
 
     prices = [r["price"] for r in recent_data]
     volumes = [r.get("volume", 0.0) for r in recent_data]
-    dates = [r.get("time", "") for r in recent_data]
 
     if indicators is None:
         if len(prices) >= 28:
             try:
-                indicators = compute_indicators(prices, volumes, dates)
+                indicators = compute_indicators(prices, volumes)
             except Exception:
                 indicators = None
         if indicators is None:
@@ -774,6 +829,20 @@ def evaluate_deployed(X_raw_val, y_val):
     return classification_metrics(y_val, probs), probs
 
 
+def persistence_baseline(X_raw, y) -> float:
+    """A no-model baseline: predict up iff the window's last bar closed up.
+
+    Feature 1 of each bar is the daily price change; the window's final bar
+    gives the most recent signal a trader could act on at prediction time.
+    """
+    X = np.asarray(X_raw, dtype=np.float32)
+    if len(X) == 0:
+        return 0.0
+    last_change = X[:, -1, 1]
+    preds = (last_change >= 0).astype(float)
+    return float(np.mean(preds == np.asarray(y)))
+
+
 def train():
     torch.manual_seed(123)
     np.random.seed(123)
@@ -782,6 +851,8 @@ def train():
     print("Fetching training data from InfluxDB...")
     data = fetch_training_data()
     print(f"Got {len(data)} daily data points")
+    print_coverage_report(data)
+    require_coverage(data)
 
     if len(data) < SEQUENCE_LEN + 2:
         print("Not enough data.")
@@ -796,12 +867,18 @@ def train():
 
     order = np.argsort(np.asarray(times), kind="stable")
     X, y = X[order], y[order]
-    split = int(0.8 * len(X))
-    X_train_raw = X[:split]
-    y_train_raw = y[:split]
-    X_val_raw = X[split:]
-    y_val_raw = y[split:]
-    print(f"Temporal split (train oldest / val newest): {len(X_train_raw)} / {len(X_val_raw)} windows")
+    n = len(X)
+    # Three-way TEMPORAL split: train (oldest) / val (middle) / test (newest).
+    # The test fold is never used for model selection or early stopping, so the
+    # reported metrics measure real generalization instead of the val fold the
+    # checkpoints were picked on.
+    n_train = int(0.7 * n)
+    n_val = int(0.15 * n)
+    X_train_raw, y_train_raw = X[:n_train], y[:n_train]
+    X_val_raw, y_val_raw = X[n_train:n_train + n_val], y[n_train:n_train + n_val]
+    X_test_raw, y_test_raw = X[n_train + n_val:], y[n_train + n_val:]
+    print(f"Temporal split (train / val / held-out test): "
+          f"{len(X_train_raw)} / {len(X_val_raw)} / {len(X_test_raw)} windows")
 
     up_idx = np.where(y_train_raw == 1)[0]
     down_idx = np.where(y_train_raw == 0)[0]
@@ -812,7 +889,7 @@ def train():
     np.random.shuffle(balanced_idx)
     X_train_raw = X_train_raw[balanced_idx]
     y_train_raw = y_train_raw[balanced_idx]
-    print(f"Balanced train: {len(X_train_raw)} | Val: {len(X_val_raw)}")
+    print(f"Balanced train: {len(X_train_raw)} | Val: {len(X_val_raw)} | Test: {len(X_test_raw)}")
 
     scaler_params = fit_scaler(X_train_raw)
     with open(SCALER_PATH, "w") as f:
@@ -821,6 +898,7 @@ def train():
     y_train = torch.tensor(y_train_raw, dtype=torch.float32)
     X_val = torch.tensor(apply_scaler(X_val_raw, scaler_params), dtype=torch.float32)
     y_val = torch.tensor(y_val_raw, dtype=torch.float32)
+    X_test = torch.tensor(apply_scaler(X_test_raw, scaler_params), dtype=torch.float32)
 
     dataset = TensorDataset(X_train, y_train)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
@@ -831,7 +909,10 @@ def train():
     criterion = nn.BCELoss()
 
     print("Training LSTM...")
-    best_acc = 0
+    # Select on balanced accuracy, not raw accuracy: raw accuracy rewards
+    # predicting the majority class on an imbalanced val fold (which is exactly
+    # how the old runs ended up at the majority baseline).
+    best_bal = 0.0
     best_state = None
     patience = 15
     no_improve = 0
@@ -853,10 +934,10 @@ def train():
         with torch.no_grad():
             val_prob = model(X_val).view(-1)
             val_pred = (val_prob > 0.5).float()
-            val_acc = accuracy_score(y_val.numpy(), val_pred.numpy())
+            val_bal = balanced_accuracy_score(y_val.numpy(), val_pred.numpy())
 
-        if val_acc > best_acc:
-            best_acc = val_acc
+        if val_bal > best_bal:
+            best_bal = val_bal
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
             no_improve = 0
         else:
@@ -869,7 +950,7 @@ def train():
             with torch.no_grad():
                 train_pred = (model(X_train).view(-1) > 0.5).float()
                 train_acc = accuracy_score(y_train.numpy(), train_pred.numpy())
-            print(f"  Epoch {epoch+1}/{EPOCHS} — loss: {total_loss/len(loader):.4f} — train: {train_acc:.1%} — val: {val_acc:.1%}")
+            print(f"  Epoch {epoch+1}/{EPOCHS} — loss: {total_loss/len(loader):.4f} — train: {train_acc:.1%} — val: {val_bal:.1%}")
 
     if best_state:
         model.load_state_dict(best_state)
@@ -877,51 +958,20 @@ def train():
     torch.save(model.state_dict(), MODEL_PATH)
     print(f"Model saved → {MODEL_PATH}")
 
+    # Final metrics on the HELD-OUT test fold (never touched during selection).
     model.eval()
     with torch.no_grad():
-        best_probs = model(X_val).view(-1).numpy()
-    metrics = classification_metrics(y_val.numpy(), best_probs)
-    print(f"Validation (newest {len(y_val)} windows):")
+        test_probs = model(X_test).view(-1).numpy()
+    metrics = classification_metrics(y_test_raw, test_probs)
+    metrics["persistence_baseline"] = persistence_baseline(X_test_raw, y_test_raw)
+    print(f"Held-out test ({len(y_test_raw)} newest windows):")
     print(f"  accuracy={metrics['accuracy']:.1%} balanced={metrics['balanced_accuracy']:.1%} "
-          f"auc={metrics['auc'] if metrics['auc'] is not None else 'N/A'} baseline={metrics['majority_baseline']:.1%}")
+          f"auc={metrics['auc'] if metrics['auc'] is not None else 'N/A'} "
+          f"majority_baseline={metrics['majority_baseline']:.1%} "
+          f"persistence={metrics['persistence_baseline']:.1%}")
+    if metrics["balanced_accuracy"] <= metrics["majority_baseline"]:
+        print("  WARN: no evidence the model beats the majority baseline on held-out data.")
     return model, metrics
-
-
-def predict(ticker, recent_data):
-    if not os.path.exists(MODEL_PATH):
-        return {"error": "Model not trained yet", "signal": "unknown"}
-
-    model = SentimentLSTM()
-    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu", weights_only=True))
-    model.eval()
-
-    if len(recent_data) < SEQUENCE_LEN:
-        return {"error": f"Need {SEQUENCE_LEN} days of data", "signal": "unknown"}
-
-    scaler = load_scaler()
-    window = build_raw_features(recent_data)
-    if window is None:
-        return {"error": f"Need {SEQUENCE_LEN} days of data", "signal": "unknown"}
-    X = torch.tensor(apply_scaler(window, scaler)[None], dtype=torch.float32)
-
-    with torch.no_grad():
-        prob_up = float(model(X).view(-1).item())
-
-    thresholds = load_predict_thresholds()
-    signal = signal_from_prob(prob_up, ticker, thresholds)
-    confidence = max(prob_up, 1 - prob_up)
-
-    meta = thresholds.get(ticker)
-    return {
-        "ticker": ticker,
-        "signal": signal,
-        "prob_up": round(prob_up, 3),
-        "prob_down": round(1 - prob_up, 3),
-        "confidence": round(confidence, 3),
-        "confidence_pct": f"{confidence*100:.0f}%",
-        "signal_gate": bool(meta and meta.get("gate")),
-        "evidence": prediction_evidence(meta) if meta else None,
-    }
 
 
 def predict_ensemble(ticker: str, recent_data: list) -> dict:

@@ -22,9 +22,12 @@ from services.lstm_predictor import (
     classification_metrics,
     fetch_training_data,
     fit_scaler,
+    persistence_baseline,
+    print_coverage_report,
+    require_coverage,
 )
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import balanced_accuracy_score
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
 SEEDS = [42, 123, 7, 99, 2024]
@@ -61,9 +64,9 @@ def train_single(seed, X_train, y_train, X_val, y_val):
         model.eval()
         with torch.no_grad():
             val_pred = (model(X_val).view(-1) > 0.5).float()
-            val_acc = accuracy_score(y_val.numpy(), val_pred.numpy())
-        if val_acc > best_acc:
-            best_acc = val_acc
+            val_bal = balanced_accuracy_score(y_val.numpy(), val_pred.numpy())
+        if val_bal > best_acc:
+            best_acc = val_bal
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
             no_improve = 0
         else:
@@ -82,6 +85,9 @@ def train_ensemble(horizon=HORIZON, threshold=LABEL_THRESHOLD):
     torch.manual_seed(42)
     print(f"Fetching training data (horizon={horizon}d, label ±{threshold:g}%)...")
     data = fetch_training_data()
+    print(f"Got {len(data)} daily data points")
+    print_coverage_report(data)
+    require_coverage(data)
     X, y, times = build_sequences(data, horizon=horizon, threshold=threshold, return_times=True)
     if len(X) == 0:
         print("No labeled windows — nothing to train on.")
@@ -90,10 +96,16 @@ def train_ensemble(horizon=HORIZON, threshold=LABEL_THRESHOLD):
 
     order = np.argsort(np.asarray(times), kind="stable")
     X, y = X[order], y[order]
-    split = int(0.8 * len(X))
-    X_train, y_train = X[:split], y[:split]
-    X_val, y_val = X[split:], y[split:]
-    print(f"Temporal split (train oldest / val newest): {len(X_train)} / {len(X_val)} windows")
+    n = len(X)
+    # Three-way TEMPORAL split; the test fold is never used for early stopping
+    # or checkpoint selection, so the final ensemble metrics are honest.
+    n_train = int(0.7 * n)
+    n_val = int(0.15 * n)
+    X_train, y_train = X[:n_train], y[:n_train]
+    X_val, y_val = X[n_train:n_train + n_val], y[n_train:n_train + n_val]
+    X_test, y_test = X[n_train + n_val:], y[n_train + n_val:]
+    print(f"Temporal split (train / val / held-out test): "
+          f"{len(X_train)} / {len(X_val)} / {len(X_test)} windows")
 
     up_idx = np.where(y_train == 1)[0]
     down_idx = np.where(y_train == 0)[0]
@@ -103,11 +115,12 @@ def train_ensemble(horizon=HORIZON, threshold=LABEL_THRESHOLD):
     idx = np.concatenate([up_idx, down_idx])
     np.random.shuffle(idx)
     X_train, y_train = X_train[idx], y_train[idx]
-    print(f"Balanced train: {len(X_train)} | Val: {len(X_val)}")
+    print(f"Balanced train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
 
     scaler_params = fit_scaler(X_train)
     X_train_scaled = apply_scaler(X_train, scaler_params)
     X_val_scaled = apply_scaler(X_val, scaler_params)
+    X_test_scaled = apply_scaler(X_test, scaler_params)
 
     with open(SCALER_PATH, "w") as f:
         json.dump(scaler_params, f)
@@ -117,6 +130,8 @@ def train_ensemble(horizon=HORIZON, threshold=LABEL_THRESHOLD):
     y_train_t = torch.tensor(y_train, dtype=torch.float32)
     X_val_t = torch.tensor(X_val_scaled, dtype=torch.float32)
     y_val_t = torch.tensor(y_val, dtype=torch.float32)
+    X_test_t = torch.tensor(X_test_scaled, dtype=torch.float32)
+    y_test_t = torch.tensor(y_test, dtype=torch.float32)
 
     accs = []
     for i, seed in enumerate(SEEDS):
@@ -126,22 +141,26 @@ def train_ensemble(horizon=HORIZON, threshold=LABEL_THRESHOLD):
         accs.append(acc)
         print(f"  Seed {seed}: {acc:.1%}")
 
-    print("\nEnsemble validation (newest held-out windows)...")
+    print("\nEnsemble held-out test evaluation (newest windows, untouched during training)...")
     preds = []
     for seed in SEEDS:
         m = SentimentLSTM()
         m.load_state_dict(torch.load(f"{MODEL_DIR}/lstm_model_{seed}.pt", map_location="cpu", weights_only=True))
         m.eval()
         with torch.no_grad():
-            preds.append(m(X_val_t).view(-1).numpy())
+            preds.append(m(X_test_t).view(-1).numpy())
 
     avg_prob = np.mean(preds, axis=0)
-    metrics = classification_metrics(y_val.numpy(), avg_prob)
-    print(f"  Individual accuracies: {[f'{a:.1%}' for a in accs]}")
+    metrics = classification_metrics(y_test, avg_prob)
+    metrics["persistence_baseline"] = persistence_baseline(X_test, y_test)
+    print(f"  Individual val balanced accuracies: {[f'{a:.1%}' for a in accs]}")
     print(f"  Ensemble accuracy={metrics['accuracy']:.1%} "
           f"balanced={metrics['balanced_accuracy']:.1%} "
           f"auc={metrics['auc'] if metrics['auc'] is not None else 'N/A'} "
-          f"baseline={metrics['majority_baseline']:.1%}")
+          f"majority_baseline={metrics['majority_baseline']:.1%} "
+          f"persistence={metrics['persistence_baseline']:.1%}")
+    if metrics["balanced_accuracy"] <= metrics["majority_baseline"]:
+        print("  WARNING: no evidence the ensemble beats a no-signal baseline. Do not deploy.")
     return metrics
 
 

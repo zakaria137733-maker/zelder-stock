@@ -50,3 +50,24 @@ export type Alert = {
 
 export type SentimentHistoryPoint = { time: string; value: number };
 export type PriceHistoryPoint = { time: string; price: number };
+
+export type EvalReport = {
+  ticker?: string;
+  days?: number;
+  horizon?: number;
+  windows?: number;
+  up_samples?: number;
+  down_samples?: number;
+  accuracy?: number;
+  balanced_accuracy?: number | null;
+  auc?: number | null;
+  accuracy_up?: number | null;
+  accuracy_down?: number | null;
+  baseline?: number;
+};
+
+export type EvalReportResponse = {
+  report: EvalReport | null;
+  source: string | null;
+  caveats: string[];
+};

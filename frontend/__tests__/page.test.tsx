@@ -26,7 +26,7 @@ describe("Home auth redirect", () => {
   });
 
   it("does not redirect when a token is stored", () => {
-    localStorage.setItem("zs_token", "t-123");
+    localStorage.setItem("sentimentiq_token", "t-123");
     render(<Home />);
     expect(push).not.toHaveBeenCalled();
   });

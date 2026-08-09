@@ -6,7 +6,7 @@ const api = axios.create({
 
 api.interceptors.request.use((config) => {
   if (typeof window !== "undefined") {
-    const token = localStorage.getItem("zs_token");
+    const token = localStorage.getItem("sentimentiq_token");
     if (token) config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
@@ -31,3 +31,6 @@ export default api;
 
 export const getAlerts = () =>
   api.get("/api/alerts/").then((r) => r.data);
+
+export const getEvalReport = () =>
+  api.get("/api/admin/eval/report").then((r) => r.data);

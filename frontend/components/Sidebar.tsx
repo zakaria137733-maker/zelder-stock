@@ -1,5 +1,5 @@
 "use client";
-import { LayoutDashboard, TrendingUp, Users, ArrowLeftRight, Rss, Settings, Zap } from "lucide-react";
+import { LayoutDashboard, TrendingUp, Users, ArrowLeftRight, Rss, Settings, Zap, LineChart } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 const nav = [
@@ -8,6 +8,7 @@ const nav = [
   { id: "market", label: "Market Data", icon: TrendingUp },
   { id: "customers", label: "Customers", icon: Users, db: "Mongo" },
   { id: "transactions", label: "Transactions", icon: ArrowLeftRight, db: "Influx" },
+  { id: "evaluation", label: "Model Evaluation", icon: LineChart },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -15,14 +16,14 @@ export default function Sidebar({ active, onNav }: { active: string; onNav: (v: 
   const router = useRouter();
 
   const logout = () => {
-    localStorage.removeItem("zs_token");
-    localStorage.removeItem("zs_user");
+    localStorage.removeItem("sentimentiq_token");
+    localStorage.removeItem("sentimentiq_user");
     router.push("/login");
   };
 
   const getUser = () => {
     try {
-      return JSON.parse(localStorage.getItem("zs_user") || "{}");
+      return JSON.parse(localStorage.getItem("sentimentiq_user") || "{}");
     } catch { return {}; }
   };
 
