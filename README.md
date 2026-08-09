@@ -202,14 +202,14 @@ docker-compose exec api python scripts/eval_walkforward.py --ticker AAPL --days 
 ```
 
 With 5 years of daily bars backfilled (`scripts/fetch_historical.py --period 5y`,
-~1,254 bars/ticker), the causal **logistic** model averages **~54%** across
+~1,257 bars/ticker), the causal **logistic** model averages **~54%** across
 AAPL/NVDA/SPY/MSFT/TSLA at the 1% threshold — tied with the majority-up prior
-and ~2 pts above momentum — reaching 55.6–57.6% on AAPL, NVDA and SPY.
-XGBoost adds nothing over momentum (~52%), and MLP *loses* signal (46.5%,
-overfits the small folds). The edge is real but thin and ticker-dependent (TSLA
-shows none). The LSTM's one unique input, sentiment, still only covers ~90 days,
-so it cannot be judged over the 5-year window yet. The harness lives in
-`services/walkforward.py` with its own offline pytest suite.
+and ~2 pts above momentum — reaching 55.4–57.7% on AAPL, NVDA and SPY.
+XGBoost (~53%) barely edges momentum (~52%), adding nothing durable over it, and
+MLP *loses* signal (46%, overfits the small folds). The edge is real but thin
+and ticker-dependent (TSLA shows none). The LSTM's one unique input, sentiment,
+still only covers ~90 days, so it cannot be judged over the 5-year window yet.
+The harness lives in `services/walkforward.py` with its own offline pytest suite.
 
 **Caveats (read this before quoting accuracy numbers anywhere):**
 
