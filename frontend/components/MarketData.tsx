@@ -14,6 +14,7 @@ const COLORS: Record<string, string> = {
 };
 const ALL_TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META"];
 const card = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 16 };
+const errorBanner = { background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "var(--red)", textAlign: "center" as const };
 
 type TooltipProps = {
   active?: boolean;
@@ -36,8 +37,8 @@ const CustomTooltip = ({ active, payload, label }: TooltipProps) => {
 };
 
 function CorrelationChart({ ticker }: { ticker: string }) {
-  const { data: sentData } = useQuery({ queryKey: ["sentiment", ticker], queryFn: () => getSentiment(ticker) });
-  const { data: priceData } = useQuery({ queryKey: ["priceHistory", ticker], queryFn: () => getPriceHistory(ticker) });
+  const { data: sentData, isError: sentError } = useQuery({ queryKey: ["sentiment", ticker], queryFn: () => getSentiment(ticker) });
+  const { data: priceData, isError: priceError } = useQuery({ queryKey: ["priceHistory", ticker], queryFn: () => getPriceHistory(ticker) });
 
   const sentMap: Record<string, number> = {};
   (sentData?.history ?? []).forEach((p: SentimentHistoryPoint) => {
@@ -56,7 +57,9 @@ function CorrelationChart({ ticker }: { ticker: string }) {
         <div style={{ fontSize: 13, fontWeight: 500 }}>Price vs Sentiment — {ticker}</div>
         <span style={{ fontSize: 9, padding: "2px 7px", borderRadius: 4, fontWeight: 600, background: "var(--accent-dim)", color: "#60a5fa" }}>InfluxDB · Yahoo Finance</span>
       </div>
-      {merged.length === 0 ? (
+      {sentError || priceError ? (
+        <div style={errorBanner}>Backend unreachable — check the API</div>
+      ) : merged.length === 0 ? (
         <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: 40 }}>Run free_collect.py to load price history</div>
       ) : (
         <ResponsiveContainer width="100%" height={220}>
@@ -77,21 +80,23 @@ function CorrelationChart({ ticker }: { ticker: string }) {
 }
 
 export default function MarketData() {
-  const { data: allSent } = useQuery({ queryKey: ["allSentiment"], queryFn: getAllSentiment, refetchInterval: 60000 });
-  const { data: allPrices } = useQuery({ queryKey: ["allPrices"], queryFn: getAllPrices, refetchInterval: 300000 });
+  const { data: allSent, isError: sentError } = useQuery({ queryKey: ["allSentiment"], queryFn: getAllSentiment, refetchInterval: 60000 });
+  const { data: allPrices, isError: priceError } = useQuery({ queryKey: ["allPrices"], queryFn: getAllPrices, refetchInterval: 300000 });
+  const { data: sentimentHistories, isError: histError } = useQuery({
+    queryKey: ["sentimentHistories"],
+    queryFn: () =>
+      Promise.all(
+        ALL_TICKERS.map((t) => getSentiment(t).then((d) => ({ ticker: t, history: d?.history ?? [] })))
+      ),
+    refetchInterval: 60000,
+  });
 
   const sentMap = Object.fromEntries((allSent ?? []).map((s: { ticker: string; composite?: number; label?: string }) => [s.ticker, s]));
   const priceMap = Object.fromEntries((allPrices ?? []).map((p: { ticker: string; price?: number; change_pct?: number }) => [p.ticker, p]));
 
-  const histories = ALL_TICKERS.map(t => ({
-    ticker: t,
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    data: useQuery({ queryKey: ["sentiment", t], queryFn: () => getSentiment(t) }).data?.history ?? []
-  }));
-
   const histMap: Record<string, Record<string, string | number>> = {};
-  histories.forEach(({ ticker, data }) => {
-    data.forEach((p: SentimentHistoryPoint) => {
+  (sentimentHistories ?? []).forEach(({ ticker, history }) => {
+    history.forEach((p: SentimentHistoryPoint) => {
       const t = new Date(p.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       if (!histMap[t]) histMap[t] = { time: t };
       histMap[t][ticker] = p.value;
@@ -101,6 +106,9 @@ export default function MarketData() {
 
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+      {sentError || priceError || histError ? (
+        <div style={errorBanner}>Backend unreachable — check the API</div>
+      ) : null}
       {/* Ticker cards with real prices */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 8 }}>
         {ALL_TICKERS.map((t) => {

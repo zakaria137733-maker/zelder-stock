@@ -9,7 +9,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }));
   return (
     <html lang="en">
-      <head><title>SentimentIQ</title></head>
+      <head><title>ZelderStock</title></head>
       <body>
         <QueryClientProvider client={qc}>{children}</QueryClientProvider>
       </body>

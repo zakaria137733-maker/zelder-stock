@@ -59,7 +59,7 @@ def fetch_price_data(ticker: str) -> dict:
 
 def collect_all():
     print("=" * 50)
-    print("SentimentIQ Free Collector")
+    print("ZelderStock Free Collector")
     print("=" * 50)
 
     all_results = []

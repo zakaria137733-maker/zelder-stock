@@ -34,7 +34,7 @@ export default function Sidebar({ active, onNav }: { active: string; onNav: (v: 
           <div style={{ width: 26, height: 26, borderRadius: 6, background: "linear-gradient(135deg, #3b82f6, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <Zap size={14} color="#fff" />
           </div>
-          SentimentIQ
+          ZelderStock
         </div>
         <div style={{ fontSize: 10, color: "var(--muted)", letterSpacing: "0.6px", textTransform: "uppercase", marginTop: 4, paddingLeft: 34 }}>Intelligence Platform</div>
       </div>

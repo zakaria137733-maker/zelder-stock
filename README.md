@@ -1,4 +1,4 @@
-# SentimentIQ — Stock Sentiment Analysis Platform
+# ZelderStock — Stock Sentiment Analysis Platform
 
 Real-time stock sentiment analysis (news → daily composite scores) served through
 a FastAPI backend and a Next.js dashboard — with a leak-free, statistically-gated
@@ -28,6 +28,32 @@ reached without fooling itself.
   `tsc --noEmit`, eslint and vitest on every push/PR.
 
 Honest caveats about signal quality are in the ML section below.
+
+## Live demo
+
+- **Demo:** https://zelder-stock-f.onrender.com/
+- **Dashboard screenshot:** [TODO: paste path/URL to a screenshot of the dashboard]
+
+## My role & what I learned
+
+> Replace the bracketed details with your own before sharing.
+
+I built ZelderStock end to end: [your role — e.g. sole developer / you led the backend
+and ML while a teammate handled X]. The whole point was to answer one question honestly —
+does daily news sentiment actually predict short-term price direction? — without fooling
+myself. What I learned:
+
+- **Evaluation design is the hard part of ML, not model selection.** Setting up a
+  leak-free walk-forward harness with proper baselines (coin flip, majority, momentum)
+  and statistical gates (McNemar, Wilson) taught me more than any model tuning. It's also
+  what made the final "no demonstrated edge" verdict trustworthy.
+- **Train/serve parity matters.** Making the deployed artifact the thing being evaluated,
+  and testing it in CI, caught problems that "fresh retrain" evaluations hide.
+- **Full-stack systems thinking.** Moving data through collection → storage → serving →
+  dashboard, with security (IDOR hardening, rate limiting) and ops (Temporal scheduling,
+  Docker Compose, CI) baked in rather than bolted on.
+- **The honest result is a feature.** Refusing to serve signal that can't clear the
+  statistical bar is the product decision I'm most proud of.
 
 ## Architecture
 
@@ -286,8 +312,9 @@ already exists, so any winner slots straight into serving.
   **0.42 accuracy vs a 0.69 up-majority baseline** (balanced accuracy 0.45,
   AUC 0.35) — honest, and consistent with the 5-year verdict above.
 - `scripts/test_ensemble.py`, `test_walkforward.py`, `test_permutation.py`, and
-  `test_generalization.py` train **their own** models with their own hyperparameters
-  and do **not** measure the deployed artifact — treat their numbers separately.
+  `devtools/test_generalization.py` train **their own** models with their own
+  hyperparameters and do **not** measure the deployed artifact — treat their
+  numbers separately.
 - The ensemble is meant to power a dashboard signal, not autonomous trading.
 
 ## Testing & CI
@@ -329,7 +356,8 @@ backend/
   services/             auth, influx, mongo, redis, sentiment, alerts, lstm_predictor
   workers/              Temporal worker, activities, workflows
   tests/                pytest suite (unit: offline fake DB; integration: real services)
-  scripts/              One-off / operational scripts (seed, collect, train, backtest, eval)
+  scripts/              Operational scripts (seed_demo, collect, train, backtest, eval)
+  devtools/             Throwaway / one-off dev experiments (force_collect, debug_*, legacy train)
   models/               Trained artifacts (lstm_model*.pt, scaler.json, eval_report.json,
                        lstm_signal_report.json, predict_thresholds.json)
 frontend/
@@ -344,6 +372,11 @@ frontend/
 - `JWT_SECRET`, `ADMIN_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD` live in `.env`
   (gitignored); `.env.example` documents them. Rotating `JWT_SECRET` invalidates all
   outstanding tokens.
+- The `.env` in the repo points at the **local docker-compose stack**. Cloud / Atlas
+  values were moved to `.env.cloud` (gitignored); the three credentials that
+  previously lived in `.env` (Atlas `MONGO_URI`, the cloud2 `INFLUX_TOKEN`, and the
+  Redis cloud `REDIS_URL`) are considered exposed and should be **rotated** — see the
+  header comment in `.env.cloud`.
 - Admin endpoints require either `X-Admin-Key` or an admin-scoped JWT.
 - Customer records are only reachable by their owner; the customer DB list is
   admin-only.
@@ -359,3 +392,7 @@ docker-compose exec api python scripts/train_ensemble.py # retrain model
 docker-compose restart api          # restart API after code changes
 docker-compose down -v              # wipe all data and start fresh
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

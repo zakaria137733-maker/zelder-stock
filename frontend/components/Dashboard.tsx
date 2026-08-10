@@ -8,6 +8,7 @@ import Predictions from "@/components/Predictions";
 import type { Signal, Trade } from "@/lib/types";
 
 const card = { background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, padding: 16 };
+const errorBanner = { background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "var(--red)", textAlign: "center" as const };
 const dbBadge = (type: "influx" | "mongo") => ({
   fontSize: 9, padding: "2px 7px", borderRadius: 4, fontWeight: 600,
   background: type === "mongo" ? "var(--green-dim)" : "var(--accent-dim)",
@@ -53,10 +54,10 @@ const CustomTooltip = ({ active, payload, label }: TooltipProps) => {
 };
 
 export default function Dashboard({ ticker }: { ticker: string }) {
-  const { data: sent } = useQuery({ queryKey: ["sentiment", ticker], queryFn: () => getSentiment(ticker), refetchInterval: 60000 });
-  const { data: allSent } = useQuery({ queryKey: ["allSentiment"], queryFn: getAllSentiment, refetchInterval: 60000 });
-  const { data: signals } = useQuery({ queryKey: ["signals", ticker], queryFn: () => getSignals(ticker), refetchInterval: 30000 });
-  const { data: txData } = useQuery({ queryKey: ["transactions", ticker], queryFn: () => getTransactions(ticker), refetchInterval: 30000 });
+  const { data: sent, isError: sentError } = useQuery({ queryKey: ["sentiment", ticker], queryFn: () => getSentiment(ticker), refetchInterval: 60000 });
+  const { data: allSent, isError: allSentError } = useQuery({ queryKey: ["allSentiment"], queryFn: getAllSentiment, refetchInterval: 60000 });
+  const { data: signals, isError: signalsError } = useQuery({ queryKey: ["signals", ticker], queryFn: () => getSignals(ticker), refetchInterval: 30000 });
+  const { data: txData, isError: txError } = useQuery({ queryKey: ["transactions", ticker], queryFn: () => getTransactions(ticker), refetchInterval: 30000 });
 
   const composite = sent?.composite ?? 50;
   const label = sent?.label ?? "neutral";
@@ -71,6 +72,10 @@ export default function Dashboard({ ticker }: { ticker: string }) {
 
   return (
     <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {sentError || allSentError || signalsError || txError ? (
+        <div style={errorBanner}>Backend unreachable — check the API</div>
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
         <KPI label="Sentiment Score" value={composite.toFixed(1)} delta={label} up={composite >= 60 ? true : composite <= 40 ? false : null} icon={Activity} />
@@ -139,8 +144,12 @@ export default function Dashboard({ ticker }: { ticker: string }) {
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }}>
-            {feed.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "20px 0" }}>No signals — run the collector</div>}
-            {feed.slice(0, 8).map((s: Signal, i: number) => (
+            {signalsError ? (
+              <div style={{ fontSize: 12, color: "var(--red)", textAlign: "center", padding: "20px 0" }}>Backend unreachable — check the API</div>
+            ) : feed.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "20px 0" }}>No signals — run the collector</div>
+            ) : null}
+            {!signalsError && feed.slice(0, 8).map((s: Signal, i: number) => (
               <div key={i} style={{ padding: "9px 10px", borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
                 <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: 3 }}>{s.source_name || s.source}</div>
                 <div style={{ fontSize: 12, color: "var(--text)", lineHeight: 1.4, marginBottom: 6 }}>{s.title}</div>

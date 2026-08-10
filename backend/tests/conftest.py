@@ -1,4 +1,4 @@
-"""Shared fixtures for the SentimentIQ test suite.
+"""Shared fixtures for the ZelderStock test suite.
 
 Tests run WITHOUT live Mongo / Influx / Redis. Routers call ``get_db()`` directly
 (not via Depends), so we patch the router module references to point at an
