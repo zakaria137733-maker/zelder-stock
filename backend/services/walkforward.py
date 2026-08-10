@@ -147,7 +147,7 @@ def _lstm_factory(rows, epochs=60, patience=8, seed=42):
     price/volume/time/sentiment/spy_ret/vix — see fetch_live_daily_context).
     Each fold trains a fresh SentimentLSTM on the training windows (which only
     see data up to their own final bar) and predicts the test windows. Uses the
-    same feature/label conventions as services.lstm_predictor, so the resulting
+    same feature/label conventions as services.ml_features, so the resulting
     number is directly comparable to the other methods in this harness.
     """
     def _lstm(prices, train_idxs, train_ys, test_idxs):
@@ -155,7 +155,7 @@ def _lstm_factory(rows, epochs=60, patience=8, seed=42):
         import torch.nn as nn
         from torch.utils.data import DataLoader, TensorDataset
 
-        from services.lstm_predictor import SentimentLSTM, build_raw_features
+        from services.ml_features import SentimentLSTM, build_raw_features
 
         def build(idxs, ys):
             Xw, yw = [], []

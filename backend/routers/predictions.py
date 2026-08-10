@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Depends
 
 from services.auth import get_current_user
-from services.lstm_predictor import fetch_live_daily_context, predict_ensemble
+from services.ml_serving import fetch_live_daily_context, predict_ensemble
 from tickers import TICKERS, validate_ticker
 
 router = APIRouter(prefix="/api/predictions", tags=["predictions"])

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 
-from services import lstm_predictor as lsp
+from services import ml_serving as lsp
 from services.auth import require_admin
 from tickers import TICKERS
 
@@ -25,8 +25,9 @@ EVAL_CAVEATS = [
     "AUC 0.35) — honest, and it shows why "
     "this powers a dashboard signal rather than autonomous trading.",
     "scripts/test_ensemble.py, test_walkforward.py, test_permutation.py, and "
-    "test_generalization.py train their own models with their own hyperparameters "
-    "and do not measure the deployed artifact — treat their numbers separately.",
+    "devtools/test_generalization.py train their own models with their own "
+    "hyperparameters and do not measure the deployed artifact — treat their "
+    "numbers separately.",
     "The ensemble is meant to power a dashboard signal, not autonomous trading.",
 ]
 
