@@ -1,10 +1,19 @@
 # SentimentIQ — Stock Sentiment Analysis Platform
 
-Real-time stock sentiment analysis with a machine-learning price-direction signal,
-served through a FastAPI backend and a Next.js dashboard.
+Real-time stock sentiment analysis (news → daily composite scores) served through
+a FastAPI backend and a Next.js dashboard — with a leak-free, statistically-gated
+ML evaluation that honestly reports *whether* the price-direction signal is real.
+The verdict after 5 years of causally-ordered data: **no ticker demonstrates a
+real edge, and the system says so.** This repo shows how that conclusion is
+reached without fooling itself.
 
 ## What this repo demonstrates
 
+- **An honest ML verdict, end to end.** 5 years of causally-ordered daily data,
+  every predictor gated against "no-signal" baselines (McNemar + Wilson tests,
+  Youden thresholds), and serving that refuses to emit a signal that can't clear
+  the bar. The result — **all 7 tickers' gates closed** — is documented in the ML
+  section below, not hidden.
 - **Leak-free evaluation.** The walk-forward harness (`scripts/eval_walkforward.py`)
   evaluates predictors strictly time-ordered — training only on past windows —
   against coin-flip, majority-up and momentum baselines, so reported accuracy
@@ -160,10 +169,52 @@ Customer routes are scoped to the **authenticated user's own record** — the
 
 ## Machine learning: what it actually does (honest evaluation)
 
+**The headline result — 5 years of data, no demonstrated signal.** The LSTM is
+evaluated the way it deserves: a fresh model trained per walk-forward fold on
+strictly past data, over ~5 years of daily bars per ticker, gated against
+baselines that define "no signal." On all 7 tracked tickers the gate stays closed:
+
+| Ticker | windows | LSTM | momentum | majority | AUC | McNemar p | gate |
+|--------|---------|------|----------|----------|-----|-----------|------|
+| AAPL | 796 | 55.0% | 53.3% | 57.3% | 0.52 | 0.470 | closed |
+| TSLA | 891 | 52.2% | 51.8% | 50.1% | 0.53 | 0.913 | closed |
+| NVDA | 864 | 52.7% | 52.5% | 53.5% | 0.48 | 1.000 | closed |
+| MSFT | 772 | 51.3% | 51.2% | 52.3% | 0.52 | 1.000 | closed |
+| GOOGL | 808 | 45.1% | 49.5% | 51.5% | 0.51 | 0.109 | closed |
+| AMZN | 792 | 49.1% | 50.6% | 49.4% | 0.47 | 0.587 | closed |
+| META | 820 | 41.0% | 53.3% | 51.0% | 0.40 | 0.000 | closed |
+
+How to read one row: over AAPL's 796 test windows the LSTM called direction
+55.0% of the time, beating momentum's 53.3% — but McNemar p = 0.470 says that gap
+is indistinguishable from chance, and neither beats "always bet up" (57.3%).
+META is the striking case: p = 0.000 with accuracy 12 points *below* momentum
+means the model is significantly **anti**-predictive there; GOOGL is below
+chance too. A gate opens only when `p < 0.05` **and** `lstm_acc > momentum_acc` —
+exactly what lets the API emit BUY/SELL — and every gate here is closed.
+
+This was previously unanswerable: live sentiment only covered ~90 days. A free
+GDELT `timelinetone` backfill (`scripts/backfill_sentiment.py`) now provides 5
+years of daily mean-news-tone per ticker, so the result isn't a data shortfall
+excuse. The conclusion: daily mean news tone + this architecture, at a 5-day
+±1% horizon, produces no edge over momentum on any ticker.
+
+**The point of the repo is the gate, not the LSTM.** This is a product that
+measures its own signal and refuses to serve signal that can't clear a
+statistical bar. The machinery:
+
+- leak-free expanding-window walk-forward (`services/walkforward.py`, with its
+  own offline pytest suite);
+- pooled out-of-fold predictions → Youden buy/sell thresholds → McNemar + Wilson
+  tests per ticker (`scripts/eval_lstm_signal.py`);
+- serving reads `models/predict_thresholds.json` — unproven tickers emit
+  `NO_SIGNAL` at runtime, which is currently the correct behavior for all 7;
+- `models/lstm_signal_report.json` is the committed artifact of the verdict,
+  with `models/predict_thresholds.json` as the serving gate.
+
 **Model.** A binary LSTM (sentiment + 11 technical features over a 10-day window)
-predicts whether the next-day return is positive. An ensemble of 5 independently
-seeded models is averaged at serving time; a per-feature min-max scaler is applied
-to raw features before the forward pass.
+predicts whether the 5-day forward return clears ±1%. An ensemble of 5
+independently seeded models is averaged at serving time; a per-feature min-max
+scaler is applied to raw features before the forward pass.
 
 **Serving parity.** The prediction endpoint (`routers/predictions.py`) runs the
 **exact same code path** used for evaluation — raw features → `scaler.json` →
@@ -182,45 +233,58 @@ single `lstm_model.pt` fallback and `scaler.json` and asserts the serving
 pipeline produces sane probabilities — so the shipped artifact is under test,
 not just some freshly-trained twin.
 
-The committed report (`backend/models/eval_report.json`) is also served to the
-dashboard: `GET /api/admin/eval/report` returns the report plus the caveats
-verbatim, and the **Model Evaluation** page (sidebar → System, admin-gated)
-renders accuracy vs. the majority and coin-flip baselines, the per-ticker
-table, and the caveats. The honest numbers live in the product, not just the
-README.
+The committed report (`backend/models/eval_report.json`, the deployed-artifact
+sanity check) is also served to the dashboard: `GET /api/admin/eval/report`
+returns the report plus the caveats verbatim, and the **Model Evaluation** page
+(sidebar → System, admin-gated) renders accuracy vs. the majority and coin-flip
+baselines, the per-ticker table, and the caveats. The honest numbers live in the
+product, not just the README.
 
-**Walk-forward harness.** `scripts/eval_walkforward.py` (offline by default,
-`--ticker` for real data, `--thresholds` for a label-threshold sweep) evaluates any
-predictor time-ordered — training only on past windows — against the three "no
-signal" baselines: coin flip (0.5), the majority-up prior, and trailing momentum
-continuation. Causal logistic, XGBoost and MLP models are included as reference
-models:
+**Walk-forward harness (price-only reference survey).**
+`scripts/eval_walkforward.py` (offline by default, `--ticker` for real data,
+`--thresholds` for a label-threshold sweep) evaluates any predictor time-ordered
+against the three "no signal" baselines: coin flip (0.5), the majority-up prior,
+and trailing momentum continuation. Causal logistic, XGBoost and MLP models are
+included as reference models:
 
 ```bash
 python scripts/eval_walkforward.py                    # synthetic, fully offline
 docker-compose exec api python scripts/eval_walkforward.py --ticker AAPL --days 1900 --thresholds 0.5,1.0,1.5,2.0
 ```
 
-With 5 years of daily bars backfilled (`scripts/fetch_historical.py --period 5y`,
-~1,257 bars/ticker), the causal **logistic** model averages **~54%** across
-AAPL/NVDA/SPY/MSFT/TSLA at the 1% threshold — tied with the majority-up prior
-and ~2 pts above momentum — reaching 55.4–57.7% on AAPL, NVDA and SPY.
-XGBoost (~53%) barely edges momentum (~52%), adding nothing durable over it, and
-MLP *loses* signal (46%, overfits the small folds). The edge is real but thin
-and ticker-dependent (TSLA shows none). The LSTM's one unique input, sentiment,
-still only covers ~90 days, so it cannot be judged over the 5-year window yet.
-The harness lives in `services/walkforward.py` with its own offline pytest suite.
+Over the same 5-year bars, the causal **logistic** (returns-only features)
+averages **~54%** across AAPL/NVDA/SPY/MSFT/TSLA at the 1% threshold — tied with
+the majority-up prior and ~2 pts above momentum — reaching 55.4–57.7% on AAPL,
+NVDA and SPY. XGBoost (~53%) barely edges momentum (~52%), adding nothing durable
+over it, and MLP *loses* signal (46%, overfits the small folds). The edge is real
+but thin and ticker-dependent (TSLA shows none) — consistent with the LSTM gate
+verdict above.
+
+**What I'd do next (the honest roadmap).** The evaluation identifies the levers,
+in order of expected value: (1) improve the input — score live news with FinBERT
+(`USE_FINBERT=true`, already wired) instead of VADER, and add article count /
+news attention as a feature, since tone alone ignores volume; (2) relative
+cross-sectional sentiment (ticker vs. peer group) instead of absolute level;
+(3) add causal sentiment features (level, 1d/5d deltas, z-scores, article count)
+to the *simple* logistic/XGBoost models in the walk-forward harness, where they
+are cheap to test; (4) reframe the problem — a ±1% 5-day binary is the hardest
+framing; regressing to forward return with calibrated (Platt/isotonic)
+probabilities and Youden thresholds is more learnable. The gate infrastructure
+already exists, so any winner slots straight into serving.
 
 **Caveats (read this before quoting accuracy numbers anywhere):**
 
 - Sentiment-driven short-horizon price direction is a **hard and noisy problem**;
-  single-digit edge over 50% is realistic even for much larger systems.
-- The dataset is short (90 days of daily bars per ticker) and daily-aggregated,
-  so sample counts are small and results are not statistically robust.
+  single-digit edge over 50% is realistic even for much larger systems — and this
+  repo's 5-year gate verdict is that the current signal doesn't even reach that.
+- The eval measures the LSTM on **daily mean GDELT news tone**. A closed gate
+  doesn't prove sentiment is worthless — it proves this feature + this
+  architecture, at this horizon, is. Live scoring (VADER/FinBERT on NewsAPI /
+  Google News text) is a different, richer signal that the 5y eval does not
+  exercise.
 - A recent run of `eval_deployed.py` on AAPL (120 days, 59 windows) scored
   **0.42 accuracy vs a 0.69 up-majority baseline** (balanced accuracy 0.45,
-  AUC 0.35) — honest, and it shows why this powers a dashboard signal rather
-  than autonomous trading.
+  AUC 0.35) — honest, and consistent with the 5-year verdict above.
 - `scripts/test_ensemble.py`, `test_walkforward.py`, `test_permutation.py`, and
   `test_generalization.py` train **their own** models with their own hyperparameters
   and do **not** measure the deployed artifact — treat their numbers separately.
@@ -266,7 +330,8 @@ backend/
   workers/              Temporal worker, activities, workflows
   tests/                pytest suite (unit: offline fake DB; integration: real services)
   scripts/              One-off / operational scripts (seed, collect, train, backtest, eval)
-  models/               Trained artifacts (lstm_model*.pt, scaler.json, eval_report.json)
+  models/               Trained artifacts (lstm_model*.pt, scaler.json, eval_report.json,
+                       lstm_signal_report.json, predict_thresholds.json)
 frontend/
   app/                  Next.js app router (login, dashboard)
   components/           UI components (charts, signal feed, customers, evaluation)

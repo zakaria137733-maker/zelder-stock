@@ -1,0 +1,128 @@
+{
+  "params": {
+    "tickers": "AAPL,TSLA,NVDA,MSFT,GOOGL,AMZN,META",
+    "days": 1900,
+    "n_folds": 5,
+    "horizon": 5,
+    "threshold": 1.0,
+    "momentum_window": 5,
+    "json_out": "models/lstm_signal_report.json",
+    "thresholds_out": "/app/models/predict_thresholds.json"
+  },
+  "per_ticker": [
+    {
+      "ticker": "AAPL",
+      "windows": 796,
+      "up_share": 0.5729,
+      "lstm_acc": 0.5503,
+      "lstm_ci95": [
+        0.5155,
+        0.5845
+      ],
+      "momentum_acc": 0.5327,
+      "majority_acc": 0.5729,
+      "balanced_accuracy": 0.5364,
+      "auc": 0.5218,
+      "p_vs_momentum": 0.4702,
+      "gate": false
+    },
+    {
+      "ticker": "TSLA",
+      "windows": 891,
+      "up_share": 0.4882,
+      "lstm_acc": 0.5219,
+      "lstm_ci95": [
+        0.4891,
+        0.5545
+      ],
+      "momentum_acc": 0.5185,
+      "majority_acc": 0.5006,
+      "balanced_accuracy": 0.5175,
+      "auc": 0.5255,
+      "p_vs_momentum": 0.9125,
+      "gate": false
+    },
+    {
+      "ticker": "NVDA",
+      "windows": 864,
+      "up_share": 0.6019,
+      "lstm_acc": 0.5266,
+      "lstm_ci95": [
+        0.4933,
+        0.5597
+      ],
+      "momentum_acc": 0.5255,
+      "majority_acc": 0.5347,
+      "balanced_accuracy": 0.4906,
+      "auc": 0.4815,
+      "p_vs_momentum": 1.0,
+      "gate": false
+    },
+    {
+      "ticker": "MSFT",
+      "windows": 772,
+      "up_share": 0.557,
+      "lstm_acc": 0.513,
+      "lstm_ci95": [
+        0.4777,
+        0.5481
+      ],
+      "momentum_acc": 0.5117,
+      "majority_acc": 0.5233,
+      "balanced_accuracy": 0.532,
+      "auc": 0.5192,
+      "p_vs_momentum": 1.0,
+      "gate": false
+    },
+    {
+      "ticker": "GOOGL",
+      "windows": 808,
+      "up_share": 0.5817,
+      "lstm_acc": 0.4505,
+      "lstm_ci95": [
+        0.4165,
+        0.485
+      ],
+      "momentum_acc": 0.495,
+      "majority_acc": 0.5149,
+      "balanced_accuracy": 0.4911,
+      "auc": 0.5072,
+      "p_vs_momentum": 0.1086,
+      "gate": false
+    },
+    {
+      "ticker": "AMZN",
+      "windows": 792,
+      "up_share": 0.5568,
+      "lstm_acc": 0.4912,
+      "lstm_ci95": [
+        0.4565,
+        0.5259
+      ],
+      "momentum_acc": 0.5063,
+      "majority_acc": 0.4937,
+      "balanced_accuracy": 0.4942,
+      "auc": 0.4726,
+      "p_vs_momentum": 0.587,
+      "gate": false
+    },
+    {
+      "ticker": "META",
+      "windows": 820,
+      "up_share": 0.5707,
+      "lstm_acc": 0.4098,
+      "lstm_ci95": [
+        0.3766,
+        0.4438
+      ],
+      "momentum_acc": 0.5329,
+      "majority_acc": 0.5098,
+      "balanced_accuracy": 0.4241,
+      "auc": 0.4003,
+      "p_vs_momentum": 0.0,
+      "gate": false
+    }
+  ],
+  "skipped": [],
+  "note": "gate=true requires p_vs_momentum<0.05 AND lstm_acc>momentum_acc; API emits BUY/SELL only for gated tickers, else NO_SIGNAL."
+}

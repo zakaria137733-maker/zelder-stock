@@ -1,0 +1,32 @@
+{
+  "params": {
+    "tickers": "AAPL",
+    "days": 1900,
+    "n_folds": 5,
+    "horizon": 5,
+    "threshold": 1.0,
+    "momentum_window": 5,
+    "json_out": "models/lstm_signal_report_aapl_sanity.json",
+    "thresholds_out": "/app/models/predict_thresholds.json"
+  },
+  "per_ticker": [
+    {
+      "ticker": "AAPL",
+      "windows": 796,
+      "up_share": 0.5729,
+      "lstm_acc": 0.5503,
+      "lstm_ci95": [
+        0.5155,
+        0.5845
+      ],
+      "momentum_acc": 0.5327,
+      "majority_acc": 0.5729,
+      "balanced_accuracy": 0.5364,
+      "auc": 0.5218,
+      "p_vs_momentum": 0.4702,
+      "gate": false
+    }
+  ],
+  "skipped": [],
+  "note": "gate=true requires p_vs_momentum<0.05 AND lstm_acc>momentum_acc; API emits BUY/SELL only for gated tickers, else NO_SIGNAL."
+}

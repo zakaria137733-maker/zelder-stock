@@ -41,7 +41,19 @@ from tickers import TICKERS as TRACKED_TICKERS
 
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 SLEEP_SECONDS = 180.0
-RETRY_BACKOFFS = [120.0, 240.0, 360.0, 480.0, 600.0]
+RETRY_BACKOFFS = [120.0, 240.0, 360.0, 480.0, 600.0, 900.0, 1200.0]
+
+# Some tickers are rarely written as their bare ticker symbol in news text
+# (articles say "Microsoft", "Amazon", "Meta Platforms" instead of MSFT/AMZN/
+# META), so a bare-symbol GDELT query returns ~nothing. For those we OR in the
+# company name — GDELT requires "(a OR b)" syntax for OR. Tickers absent here
+# keep their bare symbol (their backfill already succeeds and rewriting them
+# with broader queries would just add noise).
+GDELT_QUERIES = {
+    "AMZN": "(AMZN OR Amazon)",
+    "META": "(META OR \"Meta Platforms\")",
+    "MSFT": "(MSFT OR Microsoft)",
+}
 
 
 def tone_to_composite(value: float) -> float:
@@ -114,7 +126,8 @@ def backfill(tickers: list[str], years: int, dry_run: bool = False, sleep: float
     total_points = 0
     for ticker in tickers:
         print(f"{ticker}:", flush=True)
-        points = fetch_tone_timeline(ticker, start, end)
+        query = GDELT_QUERIES.get(ticker, ticker)
+        points = fetch_tone_timeline(query, start, end)
         if not points:
             print(f"  no timeline data returned", flush=True)
             continue
