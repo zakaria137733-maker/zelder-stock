@@ -11,6 +11,10 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      INFLUX_TOKEN: sentimentiq-super-secret-token
+      INFLUX_ORG: sentimentiq
+      INFLUX_BUCKET: sentiment_scores
     services:
       mongodb:
         image: mongo:7
