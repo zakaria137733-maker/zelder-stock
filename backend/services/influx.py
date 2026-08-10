@@ -80,17 +80,18 @@ def query_sentiment_history(ticker: str, hours: int = 24) -> list[dict]:
     client = get_client()
     query_api = client.query_api()
     hours = _clamp_hours(hours)
-    flux = f"""
-        from(bucket: "{settings.influx_bucket}")
-          |> range(start: -{hours}h)
-          |> filter(fn: (r) => r._measurement == "sentiment" and r.ticker == "{ticker}")
-          |> filter(fn: (r) => r._field == "composite")
-          |> filter(fn: (r) => r.source != "demo")
-          |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)
-          |> sort(columns: ["_time"])
-    """
+    flux = (
+        "from(bucket: bucket)"
+        " |> range(start: duration(v: hours))"
+        ' |> filter(fn: (r) => r._measurement == "sentiment" and r.ticker == ticker)'
+        ' |> filter(fn: (r) => r._field == "composite")'
+        ' |> filter(fn: (r) => r.source != "demo")'
+        " |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)"
+        ' |> sort(columns: ["_time"])'
+    )
+    params = {"bucket": settings.influx_bucket, "hours": f"-{hours}h", "ticker": ticker}
     try:
-        tables = query_api.query(flux)
+        tables = query_api.query(flux, params=params)
         return [
             {"time": record.get_time().isoformat(), "value": round(record.get_value(), 2)}
             for table in tables
@@ -105,18 +106,21 @@ def query_recent_trades(ticker: str, limit: int = 20, customer_id: str | None = 
     client = get_client()
     query_api = client.query_api()
     limit = _clamp_limit(limit)
-    customer_filter = f' and r.customer_id == "{customer_id}"' if customer_id else ""
-    flux = f"""
-        from(bucket: "stock_trades")
-          |> range(start: -24h)
-          |> filter(fn: (r) => r._measurement == "trades" and r.ticker == "{ticker}")
-          |> filter(fn: (r) => r._field == "price")
-          |> filter(fn: (r) => r.is_demo != "true"){customer_filter}
-          |> sort(columns: ["_time"], desc: true)
-          |> limit(n: {limit})
-    """
+    customer_clause = ' and r.customer_id == customer_id' if customer_id else ""
+    params = {"bucket": "stock_trades", "ticker": ticker, "max_n": limit}
+    if customer_id:
+        params["customer_id"] = customer_id
+    flux = (
+        "from(bucket: bucket)"
+        " |> range(start: -24h)"
+        ' |> filter(fn: (r) => r._measurement == "trades" and r.ticker == ticker)'
+        ' |> filter(fn: (r) => r._field == "price")'
+        f' |> filter(fn: (r) => r.is_demo != "true"{customer_clause})'
+        ' |> sort(columns: ["_time"], desc: true)'
+        " |> limit(n: max_n)"
+    )
     try:
-        tables = query_api.query(flux)
+        tables = query_api.query(flux, params=params)
         results = []
         for table in tables:
             for record in table.records:
@@ -138,14 +142,15 @@ def query_price_history(ticker: str, hours: int = 24) -> list[dict]:
     query_api = client.query_api()
     hours = _clamp_hours(hours)
     flux = (
-        f'from(bucket: "sentiment_scores")'
-        f' |> range(start: -{hours}h)'
-        f' |> filter(fn: (r) => r._measurement == "prices" and r.ticker == "{ticker}" and r._field == "close")'
-        f' |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)'
-        f' |> sort(columns: ["_time"])'
+        "from(bucket: bucket)"
+        " |> range(start: duration(v: hours))"
+        ' |> filter(fn: (r) => r._measurement == "prices" and r.ticker == ticker and r._field == "close")'
+        " |> aggregateWindow(every: 1h, fn: mean, createEmpty: false)"
+        ' |> sort(columns: ["_time"])'
     )
+    params = {"bucket": settings.influx_bucket, "hours": f"-{hours}h", "ticker": ticker}
     try:
-        tables = query_api.query(flux)
+        tables = query_api.query(flux, params=params)
         return [
             {"time": record.get_time().isoformat(), "price": round(record.get_value(), 2)}
             for table in tables for record in table.records
