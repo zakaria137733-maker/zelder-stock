@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Python model/checkpoints
+*.pt
+
+# Environment
+.env
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+
+# IDE
+.vscode/
+.idea/

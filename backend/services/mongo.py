@@ -1,0 +1,20 @@
+from motor.motor_asyncio import AsyncIOMotorClient
+from config import settings
+
+_client = None
+
+def get_client():
+    global _client
+    if _client is None:
+        print("Mongo URI:", repr(settings.mongo_uri))
+        _client = AsyncIOMotorClient(settings.mongo_uri)
+    return _client
+
+def get_db():
+    return get_client().sentimentiq
+
+async def close():
+    global _client
+    if _client:
+        _client.close()
+        _client = None
