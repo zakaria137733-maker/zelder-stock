@@ -57,13 +57,13 @@ def synthetic_prices(n=600, seed=42, momentum=0.12, drift=0.0001, vol=0.02):
     return prices
 
 
-def _majority_prior(prices, train_idxs, train_ys, test_idxs):
+def _majority_prior(_prices, _train_idxs, train_ys, test_idxs):
     majority = 1 if train_ys.mean() >= 0.5 else 0
     return np.full(len(test_idxs), majority)
 
 
 def _momentum(window):
-    def predict(prices, train_idxs, train_ys, test_idxs):
+    def predict(prices, _train_idxs, _train_ys, test_idxs):
         return np.array([1 if trailing_return(prices, int(i), window) >= 0 else 0 for i in test_idxs])
 
     return predict
@@ -150,7 +150,7 @@ def _lstm_factory(rows, epochs=60, patience=8, seed=42):
     same feature/label conventions as services.ml_features, so the resulting
     number is directly comparable to the other methods in this harness.
     """
-    def _lstm(prices, train_idxs, train_ys, test_idxs):
+    def _lstm(_prices, train_idxs, train_ys, test_idxs):
         import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader, TensorDataset
@@ -327,10 +327,14 @@ def evaluate_oof(
 ):
     """Like evaluate() but returns pooled out-of-fold predictions per method.
 
-    Result: ``{method: {"pred": [...], "prob": [...], "true": [...]}}`` in time
-    order across all test folds. ``prob`` is populated for methods that emit
-    probabilities (currently ``lstm``), enabling ROC thresholds and calibration.
-    Returns None when there is not enough data.
+    Result: ``{method: {"pred": [...], "prob": [...], "true": [...], "folds": [...]}}``
+    in time order across all test folds. ``pred``/``prob``/``true`` are the pooled
+    flat arrays; ``folds`` carries the same predictions indexed per fold as
+    ``{"fold": k, "pred": [...], "prob": [...], "true": [...]}`` so callers can
+    fit thresholds on a subset of folds and hold the last one out (see
+    ``split_holdout`` / ``oof_pooled``). ``prob`` is populated for methods that
+    emit probabilities (currently ``lstm``), enabling ROC thresholds and
+    calibration. Returns None when there is not enough data.
     """
     labels = binary_labels(prices, horizon, threshold_pct, start)
     n = len(labels)
@@ -339,18 +343,83 @@ def evaluate_oof(
         return None
 
     methods = _build_methods(momentum_window, models, rows)
-    out = {name: {"pred": [], "prob": [], "true": []} for name in methods}
+    out = {name: {"pred": [], "prob": [], "true": [], "folds": []} for name in methods}
 
-    for _k, train_idxs, train_ys, test_idxs, y_true in _iter_folds(labels, n_folds, min_train_windows):
+    for k, train_idxs, train_ys, test_idxs, y_true in _iter_folds(labels, n_folds, min_train_windows):
         for name, fn in methods.items():
+            fold = {"fold": int(k), "pred": [], "prob": [], "true": y_true.tolist()}
             raw = np.asarray(fn(prices, train_idxs, train_ys, test_idxs))
             if name == "lstm":
-                out[name]["prob"].extend(raw.tolist())
-                out[name]["pred"].extend((raw > 0.5).astype(float).tolist())
+                fold["prob"] = raw.tolist()
+                fold["pred"] = (raw > 0.5).astype(float).tolist()
             else:
-                out[name]["pred"].extend(raw.tolist())
-            out[name]["true"].extend(y_true.tolist())
+                fold["pred"] = raw.tolist()
+            out[name]["pred"].extend(fold["pred"])
+            out[name]["prob"].extend(fold["prob"])
+            out[name]["true"].extend(fold["true"])
+            out[name]["folds"].append(fold)
     return out
+
+
+def oof_pooled(oof, method, keys=("pred", "prob", "true"), folds=None):
+    """Flatten a method's OOF predictions, optionally restricted to fold numbers.
+
+    ``folds`` is a set/list of fold numbers (the ``fold`` field of each entry in
+    ``oof[method]["folds"]``). Returns ``{key: np.ndarray}`` in time order;
+    ``prob`` stays empty for methods that do not emit probabilities.
+    """
+    out = {k: [] for k in keys}
+    for entry in oof[method]["folds"]:
+        if folds is not None and entry["fold"] not in folds:
+            continue
+        for k in keys:
+            out[k].extend(entry[k])
+    return {k: np.asarray(v) for k, v in out.items()}
+
+
+def split_holdout(oof, method="lstm"):
+    """Split a method's OOF folds into (fit, holdout).
+
+    ``fit`` is every fold but the last (in time order); ``holdout`` is the last
+    fold alone. Thresholds / gates must be fit on ``fit`` and reported against
+    ``holdout`` so the held-out fold never leaks into the decision rule. Returns
+    (None, None) when the method has no fold data.
+    """
+    folds = list(oof[method]["folds"])
+    if not folds:
+        return None, None
+    return folds[:-1], folds[-1]
+
+
+def holdout_gated_metrics(holdout_probs, holdout_y, buy_threshold, sell_threshold, gate):
+    """Gated accuracy + NO_SIGNAL share on a held-out fold.
+
+    Applies the Youden buy/sell thresholds (fit on earlier folds) to the last
+    fold: BUY when prob >= buy_threshold, SELL when prob <= sell_threshold, else
+    NO_SIGNAL. ``gate`` decides whether BUY/SELL is emitted at all — when closed
+    every window is NO_SIGNAL and ``gated_acc`` is None (there is no directional
+    signal to score). Returns (gated_acc, no_signal_share).
+    """
+    probs = np.asarray(holdout_probs, dtype=float)
+    y = np.asarray(holdout_y, dtype=int)
+    n = len(y)
+    if n == 0:
+        return None, None
+    if gate:
+        buy = probs >= buy_threshold
+        sell = probs <= sell_threshold
+        directional = buy | sell
+    else:
+        buy = np.zeros(n, dtype=bool)
+        sell = np.zeros(n, dtype=bool)
+        directional = np.zeros(n, dtype=bool)
+    no_signal_share = float(np.mean(~directional)) if directional.size else 1.0
+    if np.any(directional):
+        correct = (buy & (y == 1)) | (sell & (y == 0))
+        gated_acc = float(np.mean(correct[directional]))
+    else:
+        gated_acc = None
+    return gated_acc, no_signal_share
 
 
 def binomial_ci(n, k, alpha=0.05):

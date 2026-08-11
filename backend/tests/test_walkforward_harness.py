@@ -113,6 +113,48 @@ def test_evaluate_oof_none_when_insufficient():
     assert wf.evaluate_oof([100.0] * 15) is None
 
 
+def test_evaluate_oof_fold_indexed_output():
+    prices = wf.synthetic_prices(n=800, seed=19)
+    oof = wf.evaluate_oof(prices, n_folds=5, models=["momentum"])
+    assert oof is not None
+    folds = oof["momentum"]["folds"]
+    assert folds, "expected per-fold entries"
+    fold_nums = [f["fold"] for f in folds]
+    assert fold_nums == sorted(fold_nums)
+    per_fold = [x for f in folds for x in f["pred"]]
+    assert len(per_fold) == len(oof["momentum"]["pred"]) == len(oof["momentum"]["true"]) > 0
+    assert np.allclose(per_fold, oof["momentum"]["pred"])
+    # pooled fold arrays equal the pooled top-level arrays
+    pooled = wf.oof_pooled(oof, "momentum")
+    assert np.allclose(pooled["pred"], oof["momentum"]["pred"])
+    assert np.allclose(pooled["true"], oof["momentum"]["true"])
+
+
+def test_split_holdout_and_gated_metrics():
+    prices = wf.synthetic_prices(n=800, seed=19)
+    oof = wf.evaluate_oof(prices, n_folds=5, models=["momentum", "majority_prior"])
+    assert oof is not None
+    fit, hold = wf.split_holdout(oof, "momentum")
+    assert fit and hold
+    assert hold is oof["momentum"]["folds"][-1]
+    fit_ids = [f["fold"] for f in fit]
+    fit_pool = wf.oof_pooled(oof, "momentum", folds=fit_ids)
+    hold_pool = wf.oof_pooled(oof, "momentum", folds=[hold["fold"]])
+    assert len(fit_pool["true"]) + len(hold_pool["true"]) == len(oof["momentum"]["true"])
+    # gate closed → every holdout window is NO_SIGNAL, gated accuracy is None
+    acc, share = wf.holdout_gated_metrics(hold_pool["prob"], hold_pool["true"], 0.5, 0.5, gate=False)
+    assert acc is None
+    assert share == 1.0
+    # gate open with a perfect threshold → all windows directional and accurate
+    y = hold_pool["true"]
+    probs = np.asarray(y, dtype=float)
+    acc, share = wf.holdout_gated_metrics(probs, y, buy_threshold=0.0, sell_threshold=0.0, gate=True)
+    assert acc == 1.0
+    assert share == 0.0
+    # split_holdout returns (None, None) for a method without folds
+    assert wf.split_holdout({"m": {"folds": []}}, "m") == (None, None)
+
+
 def test_mcnemar_pvalue_identical_is_not_significant():
     y = np.array([1, 0, 1, 0, 1, 0, 1, 0])
     assert wf.mcnemar_pvalue(y, y, y) == 1.0

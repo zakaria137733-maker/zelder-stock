@@ -18,9 +18,14 @@ majority prior) with statistical tests:
 
 It then writes per-ticker serving decisions for /api/predictions:
 
-  * buy/sell thresholds fit on the walk-forward OOF ROC (Youden's J), and
+  * buy/sell thresholds fit on the walk-forward OOF ROC (Youden's J), fit on
+    ALL folds but the last so the decision rule never sees its own test data,
   * a gate flag: only true when LSTM beats momentum at p < 0.05, which is what
-    lets the API emit BUY/SELL. Unproven tickers get NO_SIGNAL at serve time.
+    lets the API emit BUY/SELL. Unproven tickers get NO_SIGNAL at serve time,
+    and
+  * a last-fold holdout: the fitted thresholds are applied to the final fold and
+    reported as holdout_gated_acc / holdout_no_signal_share — the honest gated
+    accuracy the API would have produced out-of-sample.
 
 Requires the 5y GDELT sentiment backfill + prices/market_index backfill:
 
@@ -29,8 +34,8 @@ Requires the 5y GDELT sentiment backfill + prices/market_index backfill:
     docker-compose exec api python scripts/eval_lstm_signal.py --json-out models/lstm_signal_report.json
 """
 
-from services import walkforward as wf
 from services import lstm_predictor as lsp
+from services import walkforward as wf
 
 
 def _per_ticker(ticker, days, n_folds, horizon, threshold, momentum_window):
@@ -67,6 +72,26 @@ def _per_ticker(ticker, days, n_folds, horizon, threshold, momentum_window):
     auc = float(roc_auc_score(y, probs)) if len(np.unique(y)) > 1 else None
     ci = wf.binomial_ci(len(y), int(np.sum(pred_lstm == y)))
     p_mc = wf.mcnemar_pvalue(y, pred_lstm, pred_mom)
+    gate = bool(p_mc < 0.05 and acc_lstm > acc_mom)
+
+    # Youden buy/sell thresholds are fit on all folds but the last (so the
+    # decision rule never leaks its own test data), then the last fold is held
+    # out to measure the gated decision the API would actually emit.
+    fit_folds, holdout = wf.split_holdout(oof, "lstm")
+    fit = wf.oof_pooled(oof, "lstm", folds=[f["fold"] for f in fit_folds]) if fit_folds else None
+    buy_threshold = lsp.youden_threshold(fit["true"], fit["prob"]) if fit is not None and len(fit["true"]) else 0.5
+    sell_threshold = lsp.youden_threshold(1 - fit["true"], fit["prob"]) if fit is not None and len(fit["true"]) else 0.5
+    holdout_gated_acc, holdout_no_signal_share = (
+        wf.holdout_gated_metrics(
+            holdout["prob"], holdout["true"], buy_threshold, sell_threshold, gate)
+        if holdout is not None else (None, None)
+    )
+    threshold_note = (
+        f"Youden buy/sell thresholds fit on folds {[f['fold'] for f in fit_folds]} "
+        f"(all but last, {int(len(fit['true'])) if fit is not None else 0} windows); "
+        f"holdout_gated_acc / holdout_no_signal_share are measured on the held-out "
+        f"last fold ({int(len(holdout['true'])) if holdout is not None else 0} windows)."
+    )
 
     report = {
         "ticker": ticker,
@@ -79,7 +104,9 @@ def _per_ticker(ticker, days, n_folds, horizon, threshold, momentum_window):
         "balanced_accuracy": round(bal, 4),
         "auc": round(auc, 4) if auc is not None else None,
         "p_vs_momentum": round(p_mc, 4),
-        "gate": bool(p_mc < 0.05 and acc_lstm > acc_mom),
+        "gate": gate,
+        "holdout_gated_acc": round(holdout_gated_acc, 4) if holdout_gated_acc is not None else None,
+        "holdout_no_signal_share": round(holdout_no_signal_share, 4) if holdout_no_signal_share is not None else None,
     }
 
     meta = {
@@ -90,9 +117,12 @@ def _per_ticker(ticker, days, n_folds, horizon, threshold, momentum_window):
         "balanced_accuracy": report["balanced_accuracy"],
         "auc": report["auc"],
         "p_vs_momentum": report["p_vs_momentum"],
-        "buy_threshold": round(lsp.youden_threshold(y, probs), 4),
-        "sell_threshold": round(lsp.youden_threshold(1 - y, probs), 4),
+        "buy_threshold": round(buy_threshold, 4),
+        "sell_threshold": round(sell_threshold, 4),
         "gate": report["gate"],
+        "holdout_gated_acc": report["holdout_gated_acc"],
+        "holdout_no_signal_share": report["holdout_no_signal_share"],
+        "threshold_note": threshold_note,
     }
     return report, meta
 
@@ -129,6 +159,8 @@ def main():
         print(f"  LSTM 95% CI: [{report['lstm_ci95'][0]:.1%}, {report['lstm_ci95'][1]:.1%}]")
         print(f"  McNemar p vs momentum: {report['p_vs_momentum']:.4f}  →  gate={'OPEN' if report['gate'] else 'CLOSED'}")
         print(f"  Youden buy>={meta['buy_threshold']:.3f}  sell<={meta['sell_threshold']:.3f}")
+        print(f"  holdout: gated_acc={report['holdout_gated_acc'] if report['holdout_gated_acc'] is not None else 'N/A'}  "
+              f"no_signal_share={report['holdout_no_signal_share'] if report['holdout_no_signal_share'] is not None else 'N/A'}")
 
     if args.thresholds_out and metas:
         os.makedirs(os.path.dirname(args.thresholds_out) or ".", exist_ok=True)
@@ -142,7 +174,10 @@ def main():
             "per_ticker": reports,
             "skipped": skipped,
             "note": "gate=true requires p_vs_momentum<0.05 AND lstm_acc>momentum_acc; "
-                    "API emits BUY/SELL only for gated tickers, else NO_SIGNAL.",
+                    "API emits BUY/SELL only for gated tickers, else NO_SIGNAL. "
+                    "Youden thresholds are fit on all folds but the last; "
+                    "holdout_gated_acc/holdout_no_signal_share measure the gated "
+                    "decision on the held-out last fold.",
         }
         os.makedirs(os.path.dirname(args.json_out) or ".", exist_ok=True)
         with open(args.json_out, "w") as f:
