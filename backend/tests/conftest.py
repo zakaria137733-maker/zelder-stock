@@ -27,10 +27,10 @@ class FakeCollection:
                 return dict(d)
         return None
 
-    def find(self, *args, **kwargs):
+    def find(self, *_args, **_kwargs):
         return self
 
-    def sort(self, *args, **kwargs):
+    def sort(self, *_args, **_kwargs):
         return self
 
     def limit(self, n):
@@ -46,7 +46,7 @@ class FakeCollection:
         self.docs.append(dict(doc))
         return SimpleNamespace(inserted_id=doc["_id"])
 
-    async def update_one(self, filt, update, *args, **kwargs):
+    async def update_one(self, filt, update, *_args, **_kwargs):
         for d in self.docs:
             if all(d.get(k) == v for k, v in filt.items()):
                 for k, v in update.get("$set", {}).items():

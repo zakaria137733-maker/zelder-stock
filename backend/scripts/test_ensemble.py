@@ -11,13 +11,17 @@ generalizable market patterns, not ticker-specific memorization.
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
+from torch.utils.data import DataLoader, TensorDataset
+
 from services.lstm_predictor import (
+    EPOCHS,
+    FEATURES,
+    LR,
+    SEQUENCE_LEN,
+    SentimentLSTM,
     build_sequences,
     fetch_training_data,
-    SentimentLSTM,
-    SEQUENCE_LEN, FEATURES, EPOCHS, LR
 )
 
 TRAIN_TICKERS = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL"]

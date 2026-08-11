@@ -4,11 +4,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import os
 import pickle
+from collections import defaultdict
+
 import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score
-from services.lstm_predictor import fetch_training_data, SEQUENCE_LEN
-from collections import defaultdict
+
+from services.lstm_predictor import SEQUENCE_LEN, fetch_training_data
+
 
 def build_flat_features(data):
     """Flatten LSTM sequences into single feature vectors for tree models."""
@@ -18,7 +21,7 @@ def build_flat_features(data):
 
     X_all, y_all = [], []
 
-    for ticker, rows in by_ticker.items():
+    for _ticker, rows in by_ticker.items():
         rows = sorted(rows, key=lambda r: r["hour"])
         prices = [r["price"] for r in rows]
 
@@ -100,14 +103,14 @@ if __name__ == "__main__":
     train_acc = accuracy_score(y_train, model.predict(X_train))
     val_acc = accuracy_score(y_val, model.predict(X_val))
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  XGBoost train accuracy: {train_acc:.1%}")
     print(f"  XGBoost val accuracy:   {val_acc:.1%}")
-    print(f"\nFeature importances:")
+    print("\nFeature importances:")
     feature_names = ["sentiment", "price_change", "rsi", "macd", "bb_width",
                      "ema20_ratio", "ema50_ratio", "atr_ratio", "vol_momentum",
                      "adx", "stoch", "williams_r", "cci", "vix", "spy_ret", "qqq_ret"]
-    importances = sorted(zip(feature_names, model.feature_importances_), key=lambda x: -x[1])
+    importances = sorted(zip(feature_names, model.feature_importances_, strict=True), key=lambda x: -x[1])
     for name, imp in importances:
         print(f"  {name}: {imp:.3f}")
 

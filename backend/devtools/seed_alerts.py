@@ -2,9 +2,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+
 from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+
 from services.influx import get_influx_client
 
 TRAJECTORIES = {
@@ -20,7 +22,7 @@ TRAJECTORIES = {
 def seed():
     client = get_influx_client()
     write_api = client.write_api(write_options=SYNCHRONOUS)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     points = []
 
     for ticker, scores in TRAJECTORIES.items():

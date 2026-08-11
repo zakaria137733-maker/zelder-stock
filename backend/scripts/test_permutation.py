@@ -9,9 +9,15 @@ the model learned noise not signal.
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
-from services.lstm_predictor import fetch_training_data, build_sequences, SentimentLSTM, FEATURES, LR
+from torch.utils.data import DataLoader, TensorDataset
+
+from services.lstm_predictor import (
+    LR,
+    SentimentLSTM,
+    build_sequences,
+    fetch_training_data,
+)
 
 N_PERMUTATIONS = 10
 EPOCHS = 60
@@ -40,7 +46,7 @@ def train_and_eval(X_train, y_train, X_val, y_val, seed):
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-3)
     criterion = nn.BCELoss()
 
-    for epoch in range(EPOCHS):
+    for _epoch in range(EPOCHS):
         model.train()
         for X_batch, y_batch in loader:
             optimizer.zero_grad()

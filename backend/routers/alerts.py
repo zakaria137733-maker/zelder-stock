@@ -9,13 +9,13 @@ router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
 
 @router.get("/")
-async def get_alerts(user=Depends(get_current_user)):
-    loop = asyncio.get_event_loop()
+async def get_alerts(_user=Depends(get_current_user)):
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, get_cached_alerts)
 
 
 @router.post("/refresh")
-async def refresh_alerts(user=Depends(get_current_user)):
-    loop = asyncio.get_event_loop()
+async def refresh_alerts(_user=Depends(get_current_user)):
+    loop = asyncio.get_running_loop()
     alerts = await loop.run_in_executor(None, detect_alerts)
     return {"alerts": alerts, "count": len(alerts)}

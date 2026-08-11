@@ -7,6 +7,7 @@ paths so a retrained artifact is served without code changes.
 """
 
 import json
+import logging
 import os
 
 import numpy as np
@@ -23,6 +24,8 @@ from services.ml_features import (
     prediction_evidence,
     signal_from_prob,
 )
+
+logger = logging.getLogger(__name__)
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
 MODEL_PATH = f"{MODEL_DIR}/lstm_model.pt"
@@ -70,7 +73,7 @@ def load_scaler() -> dict:
             with open(SCALER_PATH) as f:
                 scaler = json.load(f)
         except Exception as e:
-            print(f"Scaler load error: {e}")
+            logger.warning("Scaler load error: %s", e)
             scaler = {}
     _SCALER_CACHE[sig] = scaler
     return scaler
@@ -92,7 +95,7 @@ def load_predict_thresholds() -> dict:
             with open(PRED_THRESHOLDS_PATH) as f:
                 thresholds = json.load(f)
         except Exception as e:
-            print(f"Predict-thresholds load error: {e}")
+            logger.warning("Predict-thresholds load error: %s", e)
             thresholds = {}
     _THRESHOLDS_CACHE[sig] = thresholds
     return thresholds
@@ -121,7 +124,7 @@ def load_ensemble_models() -> list:
                 m.eval()
                 models.append(m)
             except Exception as e:
-                print(f"Model {seed} load error: {e}")
+                logger.warning("Model %s load error: %s", seed, e)
     if not models and os.path.exists(MODEL_PATH):
         try:
             m = SentimentLSTM()
@@ -129,7 +132,7 @@ def load_ensemble_models() -> list:
             m.eval()
             models.append(m)
         except Exception as e:
-            print(f"Single model load error: {e}")
+            logger.warning("Single model load error: %s", e)
     _ENSEMBLE_CACHE[sig] = models
     return models
 
@@ -170,67 +173,88 @@ def fetch_live_daily_context(ticker: str, days: int = LOOKBACK) -> list[dict]:
     time covers the same trailing context training uses (build_sequences).
     """
     from config import settings
-    from services.influx import get_influx_client
+    from services.influx import get_client
 
-    client = get_influx_client()
+    client = get_client()
     query_api = client.query_api()
     bucket = settings.influx_bucket
-    try:
-        def query_map(measurement, field, agg, tag=ticker, extra_filter=""):
-            flux = (
-                "from(bucket: bucket)"
-                " |> range(start: duration(v: days))"
-                f' |> filter(fn: (r) => r._measurement == measurement'
-                f' and r.ticker == tag and r._field == field{extra_filter})'
-                f' |> aggregateWindow(every: 1d, fn: {agg}, createEmpty: false)'
-                ' |> sort(columns: ["_time"])'
-            )
-            params = {
-                "bucket": bucket,
-                "days": f"-{days}d",
-                "measurement": measurement,
-                "tag": tag,
-                "field": field,
-            }
-            out = {}
-            try:
-                for table in query_api.query(flux, params=params):
-                    for record in table.records:
-                        out[record.get_time().strftime("%Y-%m-%d")] = float(record.get_value())
-            except Exception as e:
-                print(f"Influx query error ({measurement}/{field}/{tag}): {e}")
-            return out
 
-        price_close = query_map("prices_daily", "close", "last")
-        price_volume = query_map("prices_daily", "volume", "last")
-        live_close = query_map("prices", "close", "last")
-        live_volume = query_map("prices", "volume", "last")
-        sent_map = query_map("sentiment", "composite", "mean", extra_filter=' and r.source != "demo"')
+    def query_map(measurement, field, agg, tag=ticker, extra_filter=""):
+        flux = (
+            "from(bucket: bucket)"
+            " |> range(start: duration(v: days))"
+            f' |> filter(fn: (r) => r._measurement == measurement'
+            f' and r.ticker == tag and r._field == field{extra_filter})'
+            f' |> aggregateWindow(every: 1d, fn: {agg}, createEmpty: false)'
+            ' |> sort(columns: ["_time"])'
+        )
+        params = {
+            "bucket": bucket,
+            "days": f"-{days}d",
+            "measurement": measurement,
+            "tag": tag,
+            "field": field,
+        }
+        out = {}
+        try:
+            for table in query_api.query(flux, params=params):
+                for record in table.records:
+                    out[record.get_time().strftime("%Y-%m-%d")] = float(record.get_value())
+        except Exception as e:
+            logger.warning("Influx query error (%s/%s/%s): %s", measurement, field, tag, e)
+        return out
 
-        price_close.update(live_close)
-        price_volume.update(live_volume)
+    price_close = query_map("prices_daily", "close", "last")
+    price_volume = query_map("prices_daily", "volume", "last")
+    live_close = query_map("prices", "close", "last")
+    live_volume = query_map("prices", "volume", "last")
+    sent_map = query_map("sentiment", "composite", "mean", extra_filter=' and r.source != "demo"')
 
-        spy_map = query_map("market_index", "close", "last", tag="SPY")
-        vix_map = query_map("market_index", "close", "last", tag="VIX")
-        spy_ret = _daily_returns(spy_map)
+    price_close.update(live_close)
+    price_volume.update(live_volume)
 
-        rows = []
-        for day in sorted(price_close.keys()):
-            rows.append({
-                "ticker": ticker,
-                "time": day,
-                "price": price_close[day],
-                "volume": price_volume.get(day, 0.0),
-                "sentiment": sent_map.get(day, 50.0),
-                "_sentiment_present": day in sent_map,
-                "spy_ret": spy_ret.get(day, 0.0),
-                "_spy_present": day in spy_map,
-                "vix": vix_map.get(day, 20.0),
-                "_vix_present": day in vix_map,
-            })
-        return rows
-    finally:
-        client.close()
+    spy_map = query_map("market_index", "close", "last", tag="SPY")
+    vix_map = query_map("market_index", "close", "last", tag="VIX")
+    spy_ret = _daily_returns(spy_map)
+
+    rows = []
+    for day in sorted(price_close.keys()):
+        rows.append({
+            "ticker": ticker,
+            "time": day,
+            "price": price_close[day],
+            "volume": price_volume.get(day, 0.0),
+            "sentiment": sent_map.get(day, 50.0),
+            "_sentiment_present": day in sent_map,
+            "spy_ret": spy_ret.get(day, 0.0),
+            "_spy_present": day in spy_map,
+            "vix": vix_map.get(day, 20.0),
+            "_vix_present": day in vix_map,
+        })
+    return rows
+
+
+def _hold_response(ticker=None, error=None):
+    """The neutral envelope returned whenever a prediction can't be made.
+
+    Centralizes the four places the old code duplicated the same HOLD payload so
+    the fallback shape (signal, prob_up/down, confidence, model_agreement,
+    models_used, optional ticker/error) stays consistent across every caller.
+    """
+    env = {
+        "signal": "HOLD",
+        "prob_up": 0.5,
+        "prob_down": 0.5,
+        "confidence": 0.5,
+        "confidence_pct": "50%",
+        "model_agreement": "N/A",
+        "models_used": 0,
+    }
+    if ticker is not None:
+        env["ticker"] = ticker
+    if error is not None:
+        env["error"] = error
+    return env
 
 
 def predict_ensemble(ticker: str, recent_data: list) -> dict:
@@ -241,17 +265,14 @@ def predict_ensemble(ticker: str, recent_data: list) -> dict:
     the API. Replaces the old duplicate ensemble loop in routers/predictions.py.
     """
     if not os.path.exists(SCALER_PATH):
-        return {"error": "Model not trained", "signal": "HOLD",
-                "prob_up": 0.5, "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%"}
+        return _hold_response(error="Model not trained")
 
     if len(recent_data) < SEQUENCE_LEN:
-        return {"error": f"Need {SEQUENCE_LEN} data points", "signal": "HOLD",
-                "prob_up": 0.5, "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%"}
+        return _hold_response(error=f"Need {SEQUENCE_LEN} data points")
 
     window = build_raw_features(recent_data)
     if window is None:
-        return {"error": f"Need {SEQUENCE_LEN} data points", "signal": "HOLD",
-                "prob_up": 0.5, "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%"}
+        return _hold_response(error=f"Need {SEQUENCE_LEN} data points")
 
     X = torch.tensor(apply_scaler(window, load_scaler())[None], dtype=torch.float32)
     probs = []
@@ -260,9 +281,7 @@ def predict_ensemble(ticker: str, recent_data: list) -> dict:
             probs.append(float(model(X).view(-1).item()))
 
     if not probs:
-        return {"ticker": ticker, "signal": "HOLD", "prob_up": 0.5,
-                "prob_down": 0.5, "confidence": 0.5, "confidence_pct": "50%",
-                "model_agreement": "N/A", "models_used": 0}
+        return _hold_response(ticker=ticker)
 
     prob_up = float(np.mean(probs))
     std = float(np.std(probs)) if len(probs) > 1 else 0.0

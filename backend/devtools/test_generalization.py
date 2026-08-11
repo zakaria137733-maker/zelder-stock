@@ -11,13 +11,16 @@ generalizable market patterns, not sector-specific memorization.
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
+from torch.utils.data import DataLoader, TensorDataset
+
 from services.lstm_predictor import (
+    FEATURES,
+    LR,
+    SEQUENCE_LEN,
+    SentimentLSTM,
     build_sequences,
     fetch_training_data,
-    SentimentLSTM,
-    SEQUENCE_LEN, FEATURES, LR
 )
 
 TRAIN_TICKERS = [
@@ -92,7 +95,6 @@ def run():
     criterion = nn.BCELoss()
 
     print("\nTraining on tech + financials sectors...")
-    best_train_acc = 0
 
     for epoch in range(EPOCHS):
         model.train()
@@ -125,7 +127,7 @@ def run():
         test_acc = accuracy_score(y_test, test_pred.numpy())
 
     print(f"\n{'='*50}")
-    print(f"FINAL RESULTS")
+    print("FINAL RESULTS")
     print(f"{'='*50}")
     print(f"Train accuracy (tech + financials) : {train_acc:.1%}")
     print(f"Test accuracy  (healthcare + energy + consumer) : {test_acc:.1%}")

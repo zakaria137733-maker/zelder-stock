@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/sentiment", tags=["sentiment"])
 @router.get("/{ticker}")
 async def get_sentiment(ticker: str):
     ticker = validate_ticker(ticker)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Try cache first
     cached = await loop.run_in_executor(None, cache_get, f"composite:{ticker}")
@@ -46,7 +46,7 @@ async def get_sentiment(ticker: str):
 @router.get("/{ticker}/history")
 async def get_history(ticker: str, hours: int = 24):
     ticker = validate_ticker(ticker)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     history = await loop.run_in_executor(None, influx.query_sentiment_history, ticker, hours)
     return {"ticker": ticker, "history": history}
 
@@ -54,7 +54,7 @@ async def get_history(ticker: str, hours: int = 24):
 @router.get("/")
 async def get_all_sentiment():
     """Quick overview of all tracked tickers."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     results = []
     for ticker in TICKERS:
         cached = await loop.run_in_executor(None, cache_get, f"composite:{ticker}")

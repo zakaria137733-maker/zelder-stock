@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/prices", tags=["prices"])
 
 @router.get("/")
 async def get_all_prices():
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     results = []
     for ticker in TICKERS:
         cached = await loop.run_in_executor(None, cache_get, f"price:{ticker}")
@@ -22,14 +22,14 @@ async def get_all_prices():
 @router.get("/{ticker}/history")
 async def get_price_history(ticker: str, hours: int = 24):
     ticker = validate_ticker(ticker)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, influx.query_price_history, ticker, hours)
 
 
 @router.get("/{ticker}")
 async def get_price(ticker: str):
     ticker = validate_ticker(ticker)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     cached = await loop.run_in_executor(None, cache_get, f"price:{ticker}")
     if cached:
         return cached

@@ -3,11 +3,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
+
 import httpx
+
 from config import settings
-from services.sentiment import classify_sentiment, compute_composite
 from services import influx
 from services.redis_client import cache_set
+from services.sentiment import classify_sentiment, compute_composite
+
 
 async def force_collect():
     tickers = {

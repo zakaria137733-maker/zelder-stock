@@ -47,7 +47,7 @@ from services.mongo import get_db
 from services.redis_client import cache_get, cache_set
 from tickers import TICKERS
 
-BUCKETS = ["sentiment_scores", "stock_trades"]
+BUCKETS = [settings.influx_bucket, settings.influx_trades_bucket]
 HOURS_BACK = 48
 N_TRADES = 200
 DEMO_EMAIL = "demo@sentimentiq.io"
@@ -139,8 +139,8 @@ def ensure_and_wipe(client, wipe: bool) -> None:
         return
 
     wipe_plan = {
-        "sentiment_scores": ["sentiment", "prices", "prices_daily", "market_index"],
-        "stock_trades": ["trades"],
+        settings.influx_bucket: ["sentiment", "prices", "prices_daily", "market_index"],
+        settings.influx_trades_bucket: ["trades"],
     }
     start = datetime(1970, 1, 1, tzinfo=UTC)
     stop = datetime.now(UTC)
@@ -248,8 +248,8 @@ def seed_prices(client, days: int) -> dict[str, list[float]]:
                 .time(live_ts)
             )
     write_api = client.write_api(write_options=SYNCHRONOUS)
-    write_api.write(bucket="sentiment_scores", record=daily_points)
-    write_api.write(bucket="sentiment_scores", record=live_points)
+    write_api.write(bucket=settings.influx_bucket, record=daily_points)
+    write_api.write(bucket=settings.influx_bucket, record=live_points)
     print(f"[influx] seeded {len(TICKERS) * days} prices_daily + prices points")
     return closes_map
 
@@ -269,7 +269,7 @@ def seed_market_index(client, days: int) -> None:
                 .time(_day_ts(days - 1 - i))
             )
     write_api = client.write_api(write_options=SYNCHRONOUS)
-    write_api.write(bucket="sentiment_scores", record=points)
+    write_api.write(bucket=settings.influx_bucket, record=points)
     print(f"[influx] seeded {len(MARKET_ANCHORS) * days} market_index points")
 
 
@@ -286,7 +286,7 @@ def seed_sentiment(client, days: int) -> None:
             comp = _clamp(base + random.gauss(0, 4), 10, 95)
             points.append(_sentiment_point(ticker, comp, NOW - timedelta(hours=h)))
     write_api = client.write_api(write_options=SYNCHRONOUS)
-    write_api.write(bucket="sentiment_scores", record=points)
+    write_api.write(bucket=settings.influx_bucket, record=points)
     print(f"[influx] seeded {len(points)} sentiment points ({daily_days} daily + {HOURS_BACK} hourly per ticker)")
 
 
@@ -310,7 +310,7 @@ def seed_trades(client, customer_ids: list[str], demo_id: str) -> None:
             .time(NOW - timedelta(hours=random.uniform(0, 24)))
         )
     write_api = client.write_api(write_options=SYNCHRONOUS)
-    write_api.write(bucket="stock_trades", record=points)
+    write_api.write(bucket=settings.influx_trades_bucket, record=points)
     print(f"[influx] seeded {N_TRADES} trades (unmarked, no is_demo tag)")
 
 
@@ -367,11 +367,11 @@ async def self_check(client, days: int) -> dict:
     checks["mongo.customers"] = customer_count == 9
     checks["mongo.demo_user"] = demo is not None and bool(demo.get("password_hash"))
 
-    senti = count_points(client, "sentiment_scores", "sentiment", "composite")
-    prices_daily = count_points(client, "sentiment_scores", "prices_daily", "close")
-    prices = count_points(client, "sentiment_scores", "prices", "close")
-    market = count_points(client, "sentiment_scores", "market_index", "close")
-    trades = count_points(client, "stock_trades", "trades", "price")
+    senti = count_points(client, settings.influx_bucket, "sentiment", "composite")
+    prices_daily = count_points(client, settings.influx_bucket, "prices_daily", "close")
+    prices = count_points(client, settings.influx_bucket, "prices", "close")
+    market = count_points(client, settings.influx_bucket, "market_index", "close")
+    trades = count_points(client, settings.influx_trades_bucket, "trades", "price")
 
     checks["influx.sentiment"] = senti == 7 * max(0, days - 2) + 7 * HOURS_BACK
     checks["influx.prices_daily"] = prices_daily == 7 * days
@@ -431,7 +431,7 @@ async def main() -> None:
         print(f"\nSelf-check: {passed}/{total} passed")
 
         print("\nDemo credentials")
-        print(f"  admin   : admin / admin123            -> POST /api/admin/login")
+        print("  admin   : admin / admin123            -> POST /api/admin/login")
         print(f"  customer: {DEMO_EMAIL} / {DEMO_PASSWORD} -> POST /api/auth/login")
         print("\nURLs")
         print("  API        : http://localhost:8000  (Swagger: http://localhost:8000/docs)")

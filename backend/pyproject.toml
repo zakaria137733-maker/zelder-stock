@@ -8,8 +8,21 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-exclude = ["scripts", "devtools", "models"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B"]
+select = ["E", "F", "W", "I", "UP", "B", "S", "ARG"]
 ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest assertions are the test mechanism, not a bug.
+"tests/*" = ["S101"]
+# Scripts/devtools bootstrap `backend` onto sys.path before importing it (they
+# run as `python scripts/foo.py`), so their `from services import ...` imports
+# necessarily follow a statement. They are otherwise fully linted.
+"scripts/*.py" = ["E402"]
+"devtools/*.py" = ["E402"]
+# Demo data seeding intentionally uses stdlib random + a fixed demo password.
+"scripts/seed_demo.py" = ["S105", "S311"]
+"services/seeding.py" = ["S311"]
+# subprocess.run with an explicit argument list and no shell (shell=False).
+"workers/temporal_activities.py" = ["S603"]

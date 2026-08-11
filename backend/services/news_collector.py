@@ -28,7 +28,7 @@ TICKER_QUERIES = {
 
 async def fetch_news_for_ticker(ticker: str) -> list[dict]:
     """Fetch and score news articles for a single ticker."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     cache_key = f"news:{ticker}"
     cached = await loop.run_in_executor(None, cache_get, cache_key)
     if cached:
@@ -109,7 +109,7 @@ async def collect_and_score_all() -> dict[str, float]:
     Returns {ticker: composite_score}.
     """
     results = {}
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     for ticker in TRACKED_TICKERS:
         print(f"Collecting {ticker}...")

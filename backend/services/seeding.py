@@ -52,7 +52,7 @@ def seed_influx() -> int:
     try:
         buckets_api = client.buckets_api()
         existing = [b.name for b in buckets_api.find_buckets().buckets]
-        for bucket in ["sentiment_scores", "stock_trades"]:
+        for bucket in [settings.influx_bucket, settings.influx_trades_bucket]:
             if bucket not in existing:
                 buckets_api.create_bucket(bucket_name=bucket, org=settings.influx_org)
                 print(f"Created bucket: {bucket}")
@@ -95,8 +95,8 @@ def seed_influx() -> int:
             )
 
         write_api = client.write_api(write_options=SYNCHRONOUS)
-        write_api.write(bucket="sentiment_scores", record=[p for p in points if p._name == "sentiment"])
-        write_api.write(bucket="stock_trades", record=[p for p in points if p._name == "trades"])
+        write_api.write(bucket=settings.influx_bucket, record=[p for p in points if p._name == "sentiment"])
+        write_api.write(bucket=settings.influx_trades_bucket, record=[p for p in points if p._name == "trades"])
         return len(points)
     finally:
         client.close()

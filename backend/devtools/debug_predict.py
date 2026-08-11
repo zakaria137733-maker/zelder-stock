@@ -27,6 +27,7 @@ volumes = [0.0] * len(prices)
 
 print(f"Calling compute_indicators with {len(prices)} points...")
 from services.lstm_predictor import compute_indicators
+
 indicators = compute_indicators(prices, volumes)
 print(f"RSI length: {len(indicators['rsi'])}")
 print("Success!")

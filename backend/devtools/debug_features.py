@@ -2,14 +2,14 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from services.lstm_predictor import fetch_training_data, build_sequences
-import numpy as np
+
+from services.lstm_predictor import build_sequences, fetch_training_data
 
 data = fetch_training_data()
 X, y = build_sequences(data)
 
 print(f"X shape: {X.shape}")
-print(f"\nFeature statistics (before normalization):")
+print("\nFeature statistics (before normalization):")
 feature_names = ["sentiment", "price", "price_change", "volume", "rsi", "macd",
                  "bb_upper", "bb_lower", "bb_width", "ma20", "ema20", "ema50",
                  "atr", "vol_momentum", "adx", "obv", "stoch", "williams_r",

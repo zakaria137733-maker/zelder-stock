@@ -7,6 +7,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.metrics import balanced_accuracy_score
+from torch.utils.data import DataLoader, TensorDataset
+
 from services.lstm_predictor import (
     EPOCHS,
     GRAD_CLIP,
@@ -14,7 +17,6 @@ from services.lstm_predictor import (
     LABEL_THRESHOLD,
     LR,
     SCALER_PATH,
-    SEQUENCE_LEN,
     WEIGHT_DECAY,
     SentimentLSTM,
     apply_scaler,
@@ -26,8 +28,6 @@ from services.lstm_predictor import (
     print_coverage_report,
     require_coverage,
 )
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import balanced_accuracy_score
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
 SEEDS = [42, 123, 7, 99, 2024]
@@ -50,7 +50,7 @@ def train_single(seed, X_train, y_train, X_val, y_val):
     patience = 15
     no_improve = 0
 
-    for epoch in range(EPOCHS):
+    for _epoch in range(EPOCHS):
         model.train()
         for X_batch, y_batch in loader:
             optimizer.zero_grad()
@@ -131,7 +131,6 @@ def train_ensemble(horizon=HORIZON, threshold=LABEL_THRESHOLD):
     X_val_t = torch.tensor(X_val_scaled, dtype=torch.float32)
     y_val_t = torch.tensor(y_val, dtype=torch.float32)
     X_test_t = torch.tensor(X_test_scaled, dtype=torch.float32)
-    y_test_t = torch.tensor(y_test, dtype=torch.float32)
 
     accs = []
     for i, seed in enumerate(SEEDS):

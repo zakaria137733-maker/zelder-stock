@@ -4,7 +4,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yfinance as yf
 
-from services.news_collector import collect_google_sentiment, fetch_google_news
+from config import settings
+from services.news_collector import collect_google_sentiment
 from services.redis_client import cache_set
 from tickers import TICKERS
 
@@ -20,6 +21,7 @@ def fetch_price_data(ticker: str) -> dict:
 
         from influxdb_client import Point
         from influxdb_client.client.write_api import SYNCHRONOUS
+
         from services.influx import get_influx_client
 
         client = get_influx_client()
@@ -40,7 +42,7 @@ def fetch_price_data(ticker: str) -> dict:
             points.append(p)
 
         if points:
-            write_api.write(bucket="sentiment_scores", record=points)
+            write_api.write(bucket=settings.influx_bucket, record=points)
             print(f"  Wrote {len(points)} price points to InfluxDB")
 
         client.close()
@@ -67,18 +69,18 @@ def collect_all():
     for ticker in TICKERS:
         print(f"\n{ticker}:")
 
-        print(f"  Fetching Google News RSS...")
+        print("  Fetching Google News RSS...")
         result = collect_google_sentiment(ticker)
         composite = result["composite"]
         print(f"  {result['signal_count']} articles scored")
         print(f"  Sentiment: {composite:.1f} ({'bullish' if composite >= 60 else 'bearish' if composite <= 40 else 'neutral'})")
 
-        print(f"  Fetching Yahoo Finance price...")
+        print("  Fetching Yahoo Finance price...")
         price_data = fetch_price_data(ticker)
         if price_data["price"]:
             print(f"  Price: ${price_data['price']} ({price_data['change_pct']:+.2f}%)")
             cache_set(f"price:{ticker}", price_data, ttl=300)
-        
+
         all_results.append({"ticker": ticker, "composite": composite, **price_data})
 
     print("\n" + "=" * 50)

@@ -12,7 +12,7 @@ if __name__ == "__main__":
         sys.exit(1)
     if result:
         model, metrics = result
-        print(f"\nTraining complete. Held-out (newest) validation:")
+        print("\nTraining complete. Held-out (newest) validation:")
         print(f"  accuracy={metrics['accuracy']:.1%} balanced={metrics['balanced_accuracy']:.1%} "
               f"auc={metrics['auc'] if metrics['auc'] is not None else 'N/A'} "
               f"majority_baseline={metrics['majority_baseline']:.1%} "

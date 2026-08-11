@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     influx_token: str = ""
     influx_org: str = "sentimentiq"
     influx_bucket: str = "sentiment_scores"
+    influx_trades_bucket: str = "stock_trades"
     redis_url: str = "redis://localhost:6379"
     temporal_url: str = "localhost:7233"
     news_api_key: str = ""

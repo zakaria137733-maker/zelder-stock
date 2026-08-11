@@ -129,7 +129,7 @@ def backfill(tickers: list[str], years: int, dry_run: bool = False, sleep: float
         query = GDELT_QUERIES.get(ticker, ticker)
         points = fetch_tone_timeline(query, start, end)
         if not points:
-            print(f"  no timeline data returned", flush=True)
+            print("  no timeline data returned", flush=True)
             continue
         if dry_run:
             print(f"  {len(points)} daily tone values "

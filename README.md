@@ -7,6 +7,28 @@ The verdict after 5 years of causally-ordered data: **no ticker demonstrates a
 real edge, and the system says so.** This repo shows how that conclusion is
 reached without fooling itself.
 
+> **TL;DR** — A full-stack stock-sentiment platform (FastAPI + Next.js + InfluxDB,
+> PyTorch LSTM) whose central product decision is **honesty**: a leak-free,
+> 5-year walk-forward evaluation with statistical gates, and serving that refuses
+> to emit a signal that can't clear them. The verdict: **no ticker demonstrates a
+> real edge — and the system says so.** Live demo: https://zelder-stock-f.onrender.com/
+
+**Project scope:** an end-to-end sentiment → prediction product, from Google News
+/ GDELT collection through storage, a gated ML signal, and a customer dashboard —
+*not* a trading bot, and *not* a claim that the signal works (it currently does
+not clear the statistical bar).
+
+## Reading guide (start here)
+
+- **Is the ML real?** Read the [ML section](#machine-learning-what-it-actually-does-honest-evaluation) —
+  the headline result, the gate, and the caveats you must read before quoting numbers.
+- **What would make it work?** [What I'd do next](#what-id-do-next-the-honest-roadmap),
+  the honest roadmap.
+- **What does the product do?** [Dashboard](#dashboard), [API endpoints](#api-endpoints),
+  [Architecture](#architecture).
+- **Run it yourself:** [Getting started](#getting-started).
+- **How is it verified?** [Testing & CI](#testing--ci).
+
 ## What this repo demonstrates
 
 - **An honest ML verdict, end to end.** 5 years of causally-ordered daily data,
@@ -29,19 +51,24 @@ reached without fooling itself.
 
 Honest caveats about signal quality are in the ML section below.
 
-## Live demo
+## Dashboard
 
-- **Demo:** https://zelder-stock-f.onrender.com/
-- **Dashboard screenshot:** [TODO: paste path/URL to a screenshot of the dashboard]
+**Live demo:** https://zelder-stock-f.onrender.com/
+
+A Next.js dashboard (`frontend/`) renders the market overview, live sentiment
+feed, market data, customer database, stock transactions, and a **Model
+Evaluation** page that shows the committed eval report and its caveats. After
+seeding (below), log in with the demo account `demo@sentimentiq.io` /
+`DemoPass123!`, or one of the eight seeded customers.
 
 ## My role & what I learned
 
-> Replace the bracketed details with your own before sharing.
-
-I built ZelderStock end to end: [your role — e.g. sole developer / you led the backend
-and ML while a teammate handled X]. The whole point was to answer one question honestly —
-does daily news sentiment actually predict short-term price direction? — without fooling
-myself. What I learned:
+I built ZelderStock end to end as the sole developer — the FastAPI backend
+(auth, rate limiting, IDOR-hardened customer scoping), the data pipeline
+(InfluxDB / MongoDB / Redis / Temporal), the PyTorch LSTM training and
+evaluation harness, and the Next.js dashboard. The whole point was to answer one
+question honestly — does daily news sentiment actually predict short-term price
+direction? — without fooling myself. What I learned:
 
 - **Evaluation design is the hard part of ML, not model selection.** Setting up a
   leak-free walk-forward harness with proper baselines (coin flip, majority, momentum)
@@ -66,10 +93,10 @@ myself. What I learned:
 └──────────┬──────────────────────────┬──────────────────────────────┘
            ▼                          ▼
    ┌───────────────┐          ┌───────────────┐          ┌──────────┐
-   │   InfluxDB    │          │    MongoDB    │          │   Redis  │
+   │    InfluxDB    │          │    MongoDB    │          │   Redis  │
    │ sentiment TS  │          │  customers    │          │  cache / │
-   │ prices_daily  │          │  profiles     │          │  dedup / │
-   │ market_index  │          │  watchlists   │          │  pubsub  │
+   │ prices_daily  │          │  watchlists   │          │  dedup / │
+   │ market_index  │          │ risk profiles │          │  pubsub  │
    │ trades        │          └───────┬───────┘          └──────────┘
    └───────┬───────┘                  │
            ▼                          ▼
@@ -97,7 +124,7 @@ itself.
 |-------|--------|
 | API | FastAPI + Uvicorn, JWT auth (python-jose), bcrypt |
 | Time-series | InfluxDB 2.x (sentiment, prices, market indices, trades) |
-| Persistence | MongoDB (customers, profiles, watchlists) |
+| Persistence | MongoDB (customers: watchlists, risk profiles) |
 | Cache / dedup | Redis (cache, URL dedup, pub/sub) |
 | Orchestration | Temporal (scheduled collection workflows) |
 | ML | PyTorch LSTM ensemble (5 seeds), XGBoost, VADER / FinBERT sentiment |
@@ -128,9 +155,16 @@ docker-compose ps   # wait for mongo/influx/redis to be healthy
 ### 3. Seed demo data
 
 ```bash
-docker-compose exec api python scripts/seed.py          # 8 customers + 48h sentiment
+docker-compose exec api python scripts/seed_demo.py       # one-command offline demo seed
 docker-compose exec api python scripts/fetch_historical.py  # daily prices + market data
 ```
+
+`scripts/seed_demo.py` needs no external APIs: it wipes (default) and reseeds a
+deterministic demo dataset — daily + hourly sentiment, daily prices, market
+indices (SPY/QQQ/VIX), ~200 trades, 8 Mongo customers plus the demo account
+`demo@sentimentiq.io` / `DemoPass123!`, and a pre-warmed Redis cache — then runs
+a live self-check. Use `--no-wipe` to skip the wipe and `--days 90` to backdate
+further. (`scripts/seed.py` is the legacy variant, superseded by `seed_demo.py`.)
 
 ### 4. Trigger live collection
 
@@ -169,16 +203,18 @@ Customer routes are scoped to the **authenticated user's own record** — the
 | POST | `/api/auth/login` | – | Customer login |
 | GET | `/api/auth/me` | customer | Current user |
 | POST | `/api/admin/login` | – | Admin login (username/password) |
+| GET | `/api/tickers` | – | Tracked ticker list |
 | GET | `/api/sentiment/` | – | All tickers overview |
 | GET | `/api/sentiment/{ticker}` | – | Composite score + history |
 | GET | `/api/sentiment/{ticker}/history` | – | Raw sentiment time-series |
-| GET | `/api/signals` | – | Latest signals per ticker |
+| GET | `/api/signals` | – | Latest signals per ticker (optional `ticker`, `limit`) |
+| WS | `/ws/signals` | – | Live signal feed (Redis pub/sub) |
 | GET | `/api/prices/` | – | Latest prices |
 | GET | `/api/prices/{ticker}/history` | – | Price history |
 | GET | `/api/prices/{ticker}` | – | Price detail |
 | GET | `/api/predictions/` | customer | Predictions for all tracked tickers |
 | GET | `/api/predictions/{ticker}` | customer | Prediction for one ticker |
-| GET | `/api/transactions/{ticker}` | – | Recent trades |
+| GET | `/api/transactions/{ticker}` | customer | Recent trades for the caller |
 | POST | `/api/transactions/` | customer | Record a trade (stamped with caller) |
 | GET | `/api/customers/` | **admin** | List all customers |
 | POST | `/api/customers/` | **admin** | Create customer |
@@ -230,8 +266,10 @@ statistical bar. The machinery:
 
 - leak-free expanding-window walk-forward (`services/walkforward.py`, with its
   own offline pytest suite);
-- pooled out-of-fold predictions → Youden buy/sell thresholds → McNemar + Wilson
-  tests per ticker (`scripts/eval_lstm_signal.py`);
+- pooled out-of-fold predictions → Youden buy/sell thresholds fit on all folds
+  but the last → McNemar + Wilson tests per ticker, plus a last-fold holdout that
+  reports the gated accuracy the API would actually produce
+  (`scripts/eval_lstm_signal.py`);
 - serving reads `models/predict_thresholds.json` — unproven tickers emit
   `NO_SIGNAL` at runtime, which is currently the correct behavior for all 7;
 - `models/lstm_signal_report.json` is the committed artifact of the verdict,
@@ -286,15 +324,16 @@ over it, and MLP *loses* signal (46%, overfits the small folds). The edge is rea
 but thin and ticker-dependent (TSLA shows none) — consistent with the LSTM gate
 verdict above.
 
-**What I'd do next (the honest roadmap).** The evaluation identifies the levers,
-in order of expected value: (1) improve the input — score live news with FinBERT
-(`USE_FINBERT=true`, already wired) instead of VADER, and add article count /
-news attention as a feature, since tone alone ignores volume; (2) relative
-cross-sectional sentiment (ticker vs. peer group) instead of absolute level;
-(3) add causal sentiment features (level, 1d/5d deltas, z-scores, article count)
-to the *simple* logistic/XGBoost models in the walk-forward harness, where they
-are cheap to test; (4) reframe the problem — a ±1% 5-day binary is the hardest
-framing; regressing to forward return with calibrated (Platt/isotonic)
+### What I'd do next (the honest roadmap)
+
+The evaluation identifies the levers, in order of expected value: (1) improve the
+input — score live news with FinBERT (`USE_FINBERT=true`, already wired) instead
+of VADER, and add article count / news attention as a feature, since tone alone
+ignores volume; (2) relative cross-sectional sentiment (ticker vs. peer group)
+instead of absolute level; (3) add causal sentiment features (level, 1d/5d deltas,
+z-scores, article count) to the *simple* logistic/XGBoost models in the walk-forward
+harness, where they are cheap to test; (4) reframe the problem — a ±1% 5-day binary
+is the hardest framing; regressing to forward return with calibrated (Platt/isotonic)
 probabilities and Youden thresholds is more learnable. The gate infrastructure
 already exists, so any winner slots straight into serving.
 
@@ -353,10 +392,12 @@ backend/
   config.py             Settings from .env (pydantic-settings)
   tickers.py            Shared ticker list + validation
   routers/              API route modules (admin: collect/seed/eval report)
-  services/             auth, influx, mongo, redis, sentiment, alerts, lstm_predictor
+  services/             auth, mongo, influx, redis_client, sentiment, news_collector,
+                        alerts, seeding, ml_features / ml_training / ml_serving, walkforward
   workers/              Temporal worker, activities, workflows
   tests/                pytest suite (unit: offline fake DB; integration: real services)
-  scripts/              Operational scripts (seed_demo, collect, train, backtest, eval)
+  scripts/              Operational scripts (seed_demo, fetch_historical, free_collect,
+                        train_ensemble, eval_deployed, eval_lstm_signal, eval_walkforward)
   devtools/             Throwaway / one-off dev experiments (force_collect, debug_*, legacy train)
   models/               Trained artifacts (lstm_model*.pt, scaler.json, eval_report.json,
                        lstm_signal_report.json, predict_thresholds.json)

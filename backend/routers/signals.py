@@ -2,7 +2,7 @@ import asyncio
 import json
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from config import settings
 from services.news_collector import fetch_google_news
@@ -16,7 +16,7 @@ _fetch_google_news = fetch_google_news
 
 
 async def fetch_signals_for_ticker(ticker: str) -> list[dict]:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     cached = await loop.run_in_executor(None, cache_get, f"signals:{ticker}")
     if cached:
         return cached
@@ -32,7 +32,7 @@ async def fetch_signals_for_ticker(ticker: str) -> list[dict]:
 
 
 @router.get("/api/signals")
-async def get_signals(ticker: str | None = None, limit: int = 30):
+async def get_signals(ticker: str | None = None, limit: int = Query(30, ge=1, le=200)):
     tickers = [validate_ticker(ticker)] if ticker else TICKERS
     all_signals = []
     for t in tickers:

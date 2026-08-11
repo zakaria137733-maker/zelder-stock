@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 
 from influxdb_client import InfluxDBClient, Point
@@ -6,11 +7,18 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 
 from config import settings
 
+logger = logging.getLogger(__name__)
+
 _client: InfluxDBClient | None = None
 
 
 def get_influx_client() -> InfluxDBClient:
-    """Single factory for Influx clients, refusing to connect without a token."""
+    """Factory for a fresh Influx client, refusing to connect without a token.
+
+    For one-shot batch paths (seed / backfill / training scripts) that close
+    their own client. Long-lived serving paths must use get_client() instead so
+    the connection is reused across requests instead of opened per request.
+    """
     if not settings.influx_token:
         raise RuntimeError(
             "INFLUX_TOKEN is not set in the environment or .env — refusing to connect without a token"
@@ -23,10 +31,38 @@ def get_influx_client() -> InfluxDBClient:
 
 
 def get_client() -> InfluxDBClient:
+    """The module-level singleton for the API/serving path.
+
+    Created once and reused for the lifetime of the process. Do NOT close it in
+    per-request finally blocks — that defeats the caching. One-shot scripts
+    should use get_influx_client() and close their own instance.
+    """
     global _client
     if _client is None:
         _client = get_influx_client()
     return _client
+
+
+def ensure_buckets() -> list[str]:
+    """Create the app's InfluxDB buckets if missing (best-effort, non-fatal).
+
+    A fresh docker-compose instance only initializes the `stock_trades` bucket
+    (DOCKER_INFLUXDB_INIT_BUCKET); the sentiment bucket is created here at
+    startup so writes never silently fail against a first-boot database.
+    Returns the names of buckets that were created.
+    """
+    wanted = {settings.influx_bucket, settings.influx_trades_bucket}
+    created = []
+    try:
+        client = get_client()
+        existing = {b.name for b in client.buckets_api().find_buckets().buckets}
+        for name in sorted(wanted - existing):
+            client.buckets_api().create_bucket(bucket_name=name, org=settings.influx_org)
+            created.append(name)
+            logger.info("Created InfluxDB bucket: %s", name)
+    except Exception as e:
+        logger.warning("Could not ensure InfluxDB buckets (%s): %s", settings.influx_org, e)
+    return created
 
 
 def _clamp_hours(hours: int) -> int:
@@ -52,7 +88,7 @@ def write_sentiment(ticker: str, score: float, composite: float, source: str, si
     try:
         write_api.write(bucket=settings.influx_bucket, record=point)
     except InfluxDBError as e:
-        print(f"InfluxDB write error: {e}")
+        logger.warning("InfluxDB write error (%s/%s): %s", ticker, source, e)
 
 
 def write_trade(ticker: str, side: str, price: float, quantity: int, customer_id: str = "", is_demo: bool = False):
@@ -71,9 +107,9 @@ def write_trade(ticker: str, side: str, price: float, quantity: int, customer_id
     if is_demo:
         point = point.tag("is_demo", "true")
     try:
-        write_api.write(bucket="stock_trades", record=point)
+        write_api.write(bucket=settings.influx_trades_bucket, record=point)
     except InfluxDBError as e:
-        print(f"InfluxDB write error: {e}")
+        logger.warning("InfluxDB trade write error (%s/%s): %s", ticker, side, e)
 
 
 def query_sentiment_history(ticker: str, hours: int = 24) -> list[dict]:
@@ -98,7 +134,7 @@ def query_sentiment_history(ticker: str, hours: int = 24) -> list[dict]:
             for record in table.records
         ]
     except Exception as e:
-        print(f"InfluxDB query error: {e}")
+        logger.warning("InfluxDB sentiment history query error (%s): %s", ticker, e)
         return []
 
 
@@ -107,7 +143,7 @@ def query_recent_trades(ticker: str, limit: int = 20, customer_id: str | None = 
     query_api = client.query_api()
     limit = _clamp_limit(limit)
     customer_clause = ' and r.customer_id == customer_id' if customer_id else ""
-    params = {"bucket": "stock_trades", "ticker": ticker, "max_n": limit}
+    params = {"bucket": settings.influx_trades_bucket, "ticker": ticker, "max_n": limit}
     if customer_id:
         params["customer_id"] = customer_id
     flux = (
@@ -133,7 +169,7 @@ def query_recent_trades(ticker: str, limit: int = 20, customer_id: str | None = 
                 })
         return results
     except Exception as e:
-        print(f"InfluxDB query error: {e}")
+        logger.warning("InfluxDB recent trades query error (%s): %s", ticker, e)
         return []
 
 
@@ -156,6 +192,5 @@ def query_price_history(ticker: str, hours: int = 24) -> list[dict]:
             for table in tables for record in table.records
         ]
     except Exception as e:
-        print(f"Price history error: {e}")
+        logger.warning("InfluxDB price history query error (%s): %s", ticker, e)
         return []
-

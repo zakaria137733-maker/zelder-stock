@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -15,21 +16,23 @@ from routers import (
     signals,
     transactions,
 )
-from routers.admin import _last_collect
-from services import mongo
+from services import influx, mongo
 from tickers import TICKERS
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     try:
         db = mongo.get_db()
         await db.customers.create_index("email", unique=True)
         await db.customers.create_index("watchlist")
         await db.customers.create_index([("sentiment_score", -1)])
-        print("ZelderStock API ready (MongoDB connected)")
+        logger.info("ZelderStock API ready (MongoDB connected)")
     except Exception as e:
-        print(f"WARNING: MongoDB unavailable at startup, continuing: {e}")
+        logger.warning("MongoDB unavailable at startup, continuing: %s", e)
+    influx.ensure_buckets()
     yield
     await mongo.close()
 
@@ -67,7 +70,7 @@ app.include_router(admin.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "ZelderStock", "last_collect": _last_collect}
+    return {"status": "ok", "service": "ZelderStock", "last_collect": admin.get_collect_status()}
 
 
 @app.get("/api/tickers")

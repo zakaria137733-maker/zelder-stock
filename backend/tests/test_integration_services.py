@@ -45,6 +45,8 @@ def services_available():
         time.sleep(1)
     else:
         pytest.skip("Mongo/Influx/Redis not reachable — start them with `docker-compose up -d`")
+    from services import influx
+    influx.ensure_buckets()
 
 
 def _poll(fn, attempts=20, delay=0.5):
@@ -57,7 +59,7 @@ def _poll(fn, attempts=20, delay=0.5):
     return result
 
 
-def test_redis_cache_roundtrip(services_available):
+def test_redis_cache_roundtrip(services_available):  # noqa: ARG001 - fixture gates on service availability
     from services import redis_client
     redis_client.get_client().flushdb()
     redis_client.cache_set("it:cache", {"ticker": "AAPL", "score": 71.5}, ttl=120)
@@ -65,14 +67,14 @@ def test_redis_cache_roundtrip(services_available):
     assert redis_client.cache_get("it:missing") is None
 
 
-def test_redis_dedup_set(services_available):
+def test_redis_dedup_set(services_available):  # noqa: ARG001 - fixture gates on service availability
     from services import redis_client
     url = "https://example.com/signal/it-dedup"
     assert redis_client.add_to_dedup_set(url, ttl=120) is True
     assert redis_client.add_to_dedup_set(url, ttl=120) is False
 
 
-def test_mongo_crud_roundtrip(services_available):
+def test_mongo_crud_roundtrip(services_available):  # noqa: ARG001 - fixture gates on service availability
     from motor.motor_asyncio import AsyncIOMotorClient
     client = AsyncIOMotorClient(settings.mongo_uri, serverSelectionTimeoutMS=3000)
     col = client.sentimentiq["it_customers"]
@@ -92,27 +94,15 @@ def test_mongo_crud_roundtrip(services_available):
     client.close()
 
 
-def _ensure_sentiment_bucket():
-    """A fresh InfluxDB only initializes the `stock_trades` bucket; create the app bucket if missing."""
+def test_influx_sentiment_roundtrip(services_available):  # noqa: ARG001 - fixture gates on service availability
     from services import influx
-    client = influx.get_client()
-    org_name = client.organizations_api().find_organizations()[0].name
-    buckets = client.buckets_api().find_buckets().buckets
-    if any(b.name == settings.influx_bucket for b in buckets):
-        return
-    client.buckets_api().create_bucket(bucket_name=settings.influx_bucket, org=org_name)
-
-
-def test_influx_sentiment_roundtrip(services_available):
-    from services import influx
-    _ensure_sentiment_bucket()
     influx.write_sentiment("ITEST", 70.0, 66.0, "integration")
     rows = _poll(lambda: influx.query_sentiment_history("ITEST", hours=48))
     assert rows, "written sentiment row never became queryable"
     assert rows[-1]["value"] == 66.0
 
 
-def test_influx_trades_roundtrip(services_available):
+def test_influx_trades_roundtrip(services_available):  # noqa: ARG001 - fixture gates on service availability
     from services import influx
     influx.write_trade("ITEST", "BUY", 150.0, 4)
     rows = _poll(lambda: influx.query_recent_trades("ITEST", limit=50))

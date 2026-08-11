@@ -3,11 +3,13 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from pymongo.errors import DuplicateKeyError
 
 from config import settings
 from services.auth import create_token, get_current_user, hash_password, verify_password
 from services.mongo import get_db
 from services.redis_client import rate_limit_exceeded
+from tickers import validate_ticker
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -72,17 +74,25 @@ async def register(body: RegisterBody, request: Request):
     if existing:
         raise HTTPException(400, "Email already registered")
 
+    try:
+        watchlist = [validate_ticker(t) for t in body.watchlist]
+    except HTTPException:
+        raise HTTPException(400, "Watchlist may only contain tracked tickers") from None
+
     doc = {
         "name": body.name,
         "email": body.email,
         "password_hash": hash_password(body.password),
         "portfolio_value": body.portfolio_value,
         "risk_profile": body.risk_profile,
-        "watchlist": [t.upper() for t in body.watchlist],
+        "watchlist": watchlist,
         "sentiment_score": 50.0,
         "created_at": datetime.now(UTC),
     }
-    await db.customers.insert_one(doc)
+    try:
+        await db.customers.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(400, "Email already registered") from None
     token = create_token({"sub": body.email, "name": body.name})
     return {"token": token, "name": body.name, "email": body.email}
 

@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yfinance as yf
 from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+
 from services.influx import get_influx_client
 
 ticker = "AAPL"

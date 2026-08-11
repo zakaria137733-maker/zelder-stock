@@ -3,10 +3,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import yfinance as yf
-from datetime import datetime, timezone
 from influxdb_client import Point
 from influxdb_client.client.write_api import SYNCHRONOUS
+
 from config import settings
 from services.influx import get_influx_client
 
@@ -48,12 +49,12 @@ def fetch_and_store(period="5y", tickers=None):
             )
             points.append(p)
         if points:
-            write_api.write(bucket="sentiment_scores", record=points)
+            write_api.write(bucket=settings.influx_bucket, record=points)
             print(f"  {ticker}: {len(points)} daily price points written")
             total += len(points)
         else:
             print(f"  {ticker}: no data (skipped)")
-    
+
     print("\nFetching market indices...")
     for ticker in MARKET_TICKERS:
         safe_name = ticker.replace("^", "")
@@ -71,9 +72,9 @@ def fetch_and_store(period="5y", tickers=None):
             )
             points.append(p)
         if points:
-            write_api.write(bucket="sentiment_scores", record=points)
+            write_api.write(bucket=settings.influx_bucket, record=points)
             print(f"  {safe_name}: {len(points)} points written")
-            total += len(points)        
+            total += len(points)
 
     client.close()
     print(f"\nTotal: {total} points written to InfluxDB")

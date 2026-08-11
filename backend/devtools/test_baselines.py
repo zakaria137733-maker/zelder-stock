@@ -3,10 +3,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
+
 from services.lstm_predictor import (
-    fetch_training_data,
     build_sequences,
     evaluate_deployed,
+    fetch_training_data,
 )
 
 data = fetch_training_data()

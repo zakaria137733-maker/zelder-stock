@@ -13,17 +13,24 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 _last_collect = {"time": None, "status": "idle"}
 
+
+def get_collect_status() -> dict:
+    """Public accessor for the collection status dict (used by main.py /health)."""
+    return dict(_last_collect)
+
 # Verbatim from the README "Caveats" section — the honest numbers behind this
 # dashboard belong next to the model, not just in the docs.
 EVAL_CAVEATS = [
     "Sentiment-driven short-horizon price direction is a hard and noisy problem; "
-    "single-digit edge over 50% is realistic even for much larger systems.",
-    "The dataset is short (90 days of daily bars per ticker) and daily-aggregated, "
-    "so sample counts are small and results are not statistically robust.",
+    "single-digit edge over 50% is realistic even for much larger systems — and "
+    "this repo's 5-year gate verdict is that the current signal doesn't even reach that.",
+    "The eval measures the LSTM on daily mean GDELT news tone. A closed gate "
+    "doesn't prove sentiment is worthless — it proves this feature plus this "
+    "architecture, at this horizon, is. Live scoring (VADER/FinBERT on NewsAPI / "
+    "Google News text) is a different, richer signal that the 5y eval does not exercise.",
     "A recent run of eval_deployed.py on AAPL (120 days, 59 windows) scored "
     "0.42 accuracy vs a 0.69 up-majority baseline (balanced accuracy 0.45, "
-    "AUC 0.35) — honest, and it shows why "
-    "this powers a dashboard signal rather than autonomous trading.",
+    "AUC 0.35) — honest, and consistent with the 5-year verdict above.",
     "scripts/test_ensemble.py, test_walkforward.py, test_permutation.py, and "
     "devtools/test_generalization.py train their own models with their own "
     "hyperparameters and do not measure the deployed artifact — treat their "
@@ -100,7 +107,7 @@ async def eval_report(_admin=Depends(require_admin)):
 
 @router.post("/collect")
 async def trigger_collect(_admin=Depends(require_admin)):
-    asyncio.get_event_loop().run_in_executor(None, _run_lightweight_collect)
+    asyncio.get_running_loop().run_in_executor(None, _run_lightweight_collect)
     return {"ok": True, "message": "Collection started"}
 
 

@@ -18,16 +18,16 @@ def _predict_sync(ticker: str) -> dict:
 
 
 @router.get("/{ticker}")
-async def get_prediction(ticker: str, user=Depends(get_current_user)):
+async def get_prediction(ticker: str, _user=Depends(get_current_user)):
     ticker = validate_ticker(ticker)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, _predict_sync, ticker)
     return result
 
 
 @router.get("/")
-async def get_all_predictions(user=Depends(get_current_user)):
-    loop = asyncio.get_event_loop()
+async def get_all_predictions(_user=Depends(get_current_user)):
+    loop = asyncio.get_running_loop()
     results = await asyncio.gather(
         *(loop.run_in_executor(None, _predict_sync, ticker) for ticker in TICKERS)
     )

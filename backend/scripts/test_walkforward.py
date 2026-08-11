@@ -6,13 +6,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 Walk-forward validation — tests if accuracy is consistent
 across different time periods, not just one lucky split.
 """
+
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
-from services.lstm_predictor import fetch_training_data, build_sequences, SentimentLSTM, FEATURES, SEQUENCE_LEN, LR, DROPOUT
-from collections import defaultdict
+from torch.utils.data import DataLoader, TensorDataset
+
+from services.lstm_predictor import (
+    LR,
+    SentimentLSTM,
+    build_sequences,
+    fetch_training_data,
+)
 
 N_WINDOWS = 5  # test across 5 different time periods
 EPOCHS = 100
@@ -44,7 +50,7 @@ def train_window(X_train, y_train, seed=42):
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-3)
     criterion = nn.BCELoss()
 
-    for epoch in range(EPOCHS):
+    for _epoch in range(EPOCHS):
         model.train()
         for X_batch, y_batch in loader:
             optimizer.zero_grad()
